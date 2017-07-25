@@ -5,7 +5,11 @@ This project aims at creating a working data diode for a fraction of the price o
 
 This project includes two versions of DYODE :
 * DYODE full : a 19" rack-sized data diode
+
+![dyodev1 picture](https://github.com/wavestone-cdt/dyode/blob/master/DYODE%20v1%20(full)/dyodev1.jpg)
 * DYODE light : a very compact and ultra low-cost version with performance limitations
+
+![dyodev2 picture](https://github.com/wavestone-cdt/dyode/blob/master/DYODE%20v2%20(light)/dyode_v2_final.JPG)
 
 For detailed information, including steps to make your own, take a look at the [wiki](https://github.com/wavestone-cdt/dyode/wiki).
 You may also take a look at the [public talks](https://github.com/wavestone-cdt/dyode/Talks) done on this project.

@@ -14,10 +14,23 @@ DYODE is developed in Python and heavily relies on open-source libraries.
 First of all, you'll need to install [udpcast](https://www.udpcast.linux.lu/), which is the tool used to transfer files through the diode.
 
 Then, you'll require Python 2 and the following modules:
-* pymodbus
-* pyinotify
-* YAML
-* asyncore
+* **pymodbus**
+   Python module installation command _pip install pymodbus_
+* **pyinotify**
+  Python module installation command _pip install pyinotify_
+* **YAML**
+  Python module installation command _pip install pyYAML_
+* **asyncore**
+  Note: Deprecated since version 3.6, will be removed in version 3.12: The asyncore module is deprecated (see PEP 594 for details). Please use asyncio instead.
+  https://docs.python.org/3/library/asyncore.html
+* **twisted**
+  Python module installation command _pip install twisted_
+* **cryptography**
+  Python module installation command _pip install cryptography_
+* **bcrypt**
+  Python module installation command _pip install bcrypt_
+* **pyasnl_modules**
+  Python module installation command _pip install pyasnl_modules_
 
 ### Configuration file
 Configuration is based on a YAML file, which must be copied to both input and output diodes.

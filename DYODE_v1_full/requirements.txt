@@ -1,0 +1,6 @@
+# DYODE v1 (Python 3.11+). Also needs the udpcast package (apt install udpcast)
+# for folder modules, and iproute2 for the static ARP entry.
+PyYAML>=6.0
+# 3.13 removed the datastore setValues API used here; see modbus.py.
+pymodbus>=3.11,<3.13
+inotify_simple>=1.3

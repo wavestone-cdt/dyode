@@ -11,6 +11,20 @@ This project includes two versions of DYODE :
 
 ![dyodev2 picture](https://github.com/wavestone-cdt/dyode/blob/master/DYODE%20v2%20(light)/dyode_v2_final.JPG)
 
+## Python 3 port
+
+This branch runs on Python 3.11+ (the original code was Python 2). What changed,
+and how to deploy it, is in [PYTHON3_MIGRATION.md](PYTHON3_MIGRATION.md).
+
+To configure a box, run the setup wizard from this folder:
+
+```bash
+python3 dyode_setup.py          # curses interface (--plain for plain text)
+```
+
+It detects your network interfaces, writes the MAC addresses into `config.yaml`
+for you, and can generate a systemd service.
+
 For detailed information, including steps to make your own, take a look at the [wiki](https://github.com/wavestone-cdt/dyode/wiki).
 You may also take a look at the [public talks](https://github.com/wavestone-cdt/dyode/tree/master/Talks) done on this project.
 

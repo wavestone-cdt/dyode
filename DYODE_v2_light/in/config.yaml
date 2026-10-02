@@ -1,0 +1,26 @@
+config_name: "Dyode v2"
+config_version : 1.0
+config_date: 2017-07-25
+
+modules:
+  "Automate Modbus 1":
+     type: modbus
+     port: 9400
+     ip: 192.168.0.5
+     port_out: 502
+     registers:
+       - 0-105
+     coils:
+      - 0-1
+
+# --- Optional (Python 3 port) ---
+# Serial link settings. /dev/serial0 is the Raspberry Pi's alias for the
+# GPIO UART; the original hardcoded /dev/ttyAMA0, which is the Bluetooth
+# UART on a Pi 3/4 unless Bluetooth is disabled. Must match on both sides.
+# serial:
+#   device: /dev/serial0
+#   baudrate: 57600
+#
+# Per-module options: plc_port (502), unit (1), interval (1.0 s),
+# stale_after (10 s, output side). Register/coil ranges exclude the end:
+# 0-105 means addresses 0..104.

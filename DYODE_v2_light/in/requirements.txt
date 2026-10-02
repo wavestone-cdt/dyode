@@ -1,0 +1,5 @@
+# DYODE v2 (Python 3.11+)
+PyYAML>=6.0
+# 3.13 removed the datastore setValues API used here; see modbus.py.
+pymodbus>=3.11,<3.13
+pyserial>=3.5

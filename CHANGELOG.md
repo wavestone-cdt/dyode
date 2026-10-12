@@ -3,7 +3,7 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
-## [Unreleased]
+## [1.2.0] - 2026-10-12
 
 ### Added
 

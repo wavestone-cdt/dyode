@@ -10,6 +10,7 @@ import logging
 import dyode
 import dyode_common as common
 import modbus
+import logstream
 import screen
 
 log = logging.getLogger("dyode")
@@ -22,6 +23,7 @@ AGENTS = {
     "folder": dyode.run_folder_input,
     "modbus": modbus.run_udp_input,
     "screen": screen.run_screen_input,
+    "logs": logstream.run_logs_input,
 }
 
 

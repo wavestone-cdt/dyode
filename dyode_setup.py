@@ -385,7 +385,8 @@ def _ask_serial(ui, model, args):
 def _edit_modules(ui, model, variant):
     types = ([("modbus", "Mirror a PLC's registers and coils"),
               ("folder", "Send files dropped in a folder"),
-              ("screen", "Share screenshots over HTTP")] if variant == "v1"
+              ("screen", "Share screenshots over HTTP"),
+              ("logs", "Stream syslog and log files to a SIEM or files")] if variant == "v1"
              else [("modbus", "Mirror a PLC's registers and coils")])
     while True:
         listing = ["%d. %s (%s, port %s)" % (i + 1, m.name, m.type, m.props.get("port"))
@@ -439,6 +440,36 @@ def _add_module(ui, model, mtype):
                               "/home/pi/in", core.valid_abs_path)
         props["out"] = ui.text(name, "Folder to receive into (on the output box)",
                                "/home/pi/out", core.valid_abs_path)
+    elif mtype == "logs":
+        udp = ui.text(name, "Receive syslog over UDP on this port (input box)", "514",
+                      lambda t: not t.strip() or core.valid_port(t),
+                      help_text="Point OT devices' syslog here. Leave empty for none.")
+        tail = ui.text(name, "Log files to follow on the input box", "",
+                       core.valid_abs_path_list,
+                       help_text="Comma separated, globs allowed: /var/log/plc/*.log. "
+                                 "Leave empty for none.")
+        if not udp.strip() and not tail.strip():
+            ui.error("A logs module needs a source: a syslog port or files to follow.")
+            return
+        out = ui.text(name, "Folder to write received logs to (output box)",
+                      "/var/log/dyode-ot", lambda t: not t.strip() or core.valid_abs_path(t),
+                      help_text="Leave empty to only forward.")
+        forward = ui.text(name, "Forward to a SIEM / syslog server", "",
+                          core.valid_forward_list,
+                          help_text="udp://host:514 or tcp://host:601, comma separated. "
+                                    "Leave empty for none.")
+        if not out.strip() and not forward.strip():
+            ui.error("A logs module needs somewhere to put lines: a folder or a "
+                     "forward target.")
+            return
+        if udp.strip():
+            props["listen_udp"] = int(udp)
+        if tail.strip():
+            props["tail"] = core.split_list(tail)
+        if out.strip():
+            props["out"] = out.strip()
+        if forward.strip():
+            props["forward"] = core.split_list(forward)
     else:
         props["in"] = ui.text(name, "Folder where screenshots appear (input box)",
                               "/home/pi/screenz", core.valid_abs_path)

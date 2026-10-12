@@ -404,6 +404,10 @@ Events: `batch_sent`, `batch_failed`, `file_sent` (input side);
 `file_orphaned`, `batch_received` (output side). `batch_received` carries a
 `reason` of `complete`, `timeout`, `superseded`, `evicted` or `shutdown`.
 
+`logs` modules add `logs_gap`, `logs_dropped_at_source`, `logs_stale`,
+`logs_resumed`, `logs_sender_restart` and a per-minute `logs_stats` from
+each side; see [LOG_STREAMING.md](DYODE_v1_full/LOG_STREAMING.md).
+
 The alert that matters most: **`file_missing`**. It names a file the
 manifest promised that never arrived, which on a diode is the failure mode
 you cannot otherwise detect.
@@ -547,6 +551,11 @@ module 'transfer': watching /srv/in (port 9600, 900 Mbit/s, FEC off)
   message. Payloads are at most 1400 bytes, so datagrams fit a standard
   Ethernet frame. Messages with lost, reordered or corrupted chunks are
   rebuilt or dropped, never delivered corrupted.
+- **Log batches (v1 `logs`):** inside the DYO1 framing, `DYLG`, a version
+  byte, then zlib-compressed JSON carrying the stream's boot id, a sequence
+  number, the sender's dropped-line count and the lines. Each batch is sent
+  `copies` times, spaced in time; the receiver de-duplicates and reorders
+  by sequence number and reports gaps.
 - **Serial (v2):** one message per line, `<crc32 hex> <compact JSON>\n`.
 - **File manifest (v1):** a JSON file listing each file's path, size and
   SHA-256, in sending order. If a batch is interrupted, the receiver
@@ -559,7 +568,7 @@ module 'transfer': watching /srv/in (port 9600, 900 Mbit/s, FEC off)
 python3 -m unittest discover -s tests
 ```
 
-This runs 67 tests in about 10 seconds, with no network or hardware
+This runs 179 tests in about 30 seconds, with no network or hardware
 needed. The tests use small stand-in versions of pymodbus and pyserial
 (`tests/fakes/`), so they exercise all of DYODE's own logic, including
 end-to-end UDP, serial, HTTP and multiprocessing paths, plus the setup
@@ -587,6 +596,8 @@ Repository root:
 |---|---|
 | `dyode_setup.py`, `dyode_setup_core.py` | guided setup wizard |
 | `dyode_logs.py` | weekly log archiving (`--archive`) and a reader (`--stats`) |
+| `DYODE_v1_full/logstream.py` | the `logs` module (log streaming); v1 only |
+| `DYODE_v1_full/LOG_STREAMING.md` | log streaming: use cases, settings, limits, roadmap |
 | `packaging/logrotate/dyode-transfer` | install as `/etc/logrotate.d/dyode-transfer` |
 | `packaging/systemd/dyode-log-archive.{service,timer}` | weekly archiving timer |
 | `install.sh` | installer: OS packages, virtualenv, Python packages; `--offline` or `--online` |

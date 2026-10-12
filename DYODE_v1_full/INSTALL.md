@@ -97,6 +97,11 @@ Copy all files in the two computers. To launch the diode, launch :
 * dyode_in.py on the input computer
 * dyode_out.py on the output computer
 
+## Log streaming
+
+To carry syslog or log files from the OT side to a SIEM, add a `type: logs`
+module. Settings, limits and measured behaviour are in LOG_STREAMING.md.
+
 ## Logs
 
 Both boxes write to `/var/log/dyode-transfer`: `dyode.log` for reading, and

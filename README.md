@@ -46,6 +46,8 @@ Features
 * Modbus data transfer
 * File transfer (*DYODE full only*)
 * Screen sharing (*DYODE full only*)
+* Log streaming: syslog and log files to a SIEM (*DYODE full only*, see
+  [LOG_STREAMING.md](DYODE_v1_full/LOG_STREAMING.md))
 
 
 ## License

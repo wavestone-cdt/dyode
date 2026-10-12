@@ -25,7 +25,7 @@ import dyode_common as common  # noqa: E402
 
 DEFAULT_IN_IP = "10.0.1.1"
 DEFAULT_OUT_IP = "10.0.1.2"
-DEFAULT_PORTS = {"folder": 9600, "modbus": 9400, "screen": 9900}
+DEFAULT_PORTS = {"folder": 9600, "modbus": 9400, "screen": 9900, "logs": 9700}
 ZERO_MAC = "00:00:00:00:00:00"
 
 MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
@@ -71,6 +71,24 @@ def split_ranges(text):
 
 def valid_abs_path(text):
     return text.strip().startswith("/") and "\x00" not in text
+
+
+def split_list(text):
+    return [p.strip() for p in text.split(",") if p.strip()]
+
+
+def valid_abs_path_list(text):
+    """Comma-separated absolute paths or globs, or empty."""
+    return all(valid_abs_path(p) for p in split_list(text))
+
+
+def valid_forward_list(text):
+    """Comma-separated udp://host:port / tcp://host:port, or empty."""
+    for item in split_list(text):
+        m = re.match(r"^(udp|tcp)://([^\s:/]+):(\d+)$", item, re.I)
+        if not m or not valid_port(m.group(3)):
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -294,9 +312,18 @@ class ConfigModel:
             L.append("  %s:" % _quote(mod.name))
             L.append("    type: %s" % mod.type)
             for key in ("port", "ip", "port_out", "plc_port", "unit", "interval",
-                        "in", "out", "http_port", "max_fps", "settle", "bitrate"):
+                        "in", "out", "http_port", "max_fps", "settle", "bitrate",
+                        "listen_udp", "listen_tcp", "copies", "max_kbps",
+                        "format", "split_by_source"):
                 if key in mod.props:
                     L.append("    %s: %s" % (key, _scalar(mod.props[key])))
+            for key in ("tail", "forward", "allow_from"):
+                values = mod.props.get(key)
+                if isinstance(values, str):
+                    values = [values]
+                if values:
+                    L.append("    %s:" % key)
+                    L += ["      - %s" % _quote(str(v)) for v in values]
             for key in ("registers", "coils"):
                 values = mod.props.get(key)
                 if values:

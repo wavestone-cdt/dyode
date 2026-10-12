@@ -186,10 +186,11 @@ def read_events(path):
 
 
 def summarize(events):
-    """Totals per event type, plus files and bytes moved."""
+    """Totals per event type, files and bytes moved, and log lines."""
     totals = collections.Counter()
     files_sent = files_stored = files_rejected = 0
     bytes_sent = bytes_stored = 0
+    log_lines = collections.Counter()
     for event in events:
         name = event.get("event", "?")
         totals[name] += 1
@@ -200,9 +201,19 @@ def summarize(events):
             files_stored += event.get("files_stored", 0)
             files_rejected += event.get("files_rejected", 0)
             bytes_stored += event.get("bytes", 0)
+        elif name == "logs_stats":
+            # Periodic counters from 'logs' modules; each record covers the
+            # minute since the previous one, so they simply add up.
+            if event.get("side") == "in":
+                log_lines["sent"] += event.get("lines_sent", 0)
+                log_lines["dropped_at_source"] += event.get("dropped", 0)
+            else:
+                log_lines["delivered"] += event.get("lines", 0)
+                log_lines["batches_lost"] += event.get("lost_batches", 0)
     return {"events": dict(totals), "files_sent": files_sent,
             "files_stored": files_stored, "files_rejected": files_rejected,
-            "bytes_sent": bytes_sent, "bytes_stored": bytes_stored}
+            "bytes_sent": bytes_sent, "bytes_stored": bytes_stored,
+            "log_lines": dict(log_lines)}
 
 
 def human_bytes(count):
@@ -254,6 +265,13 @@ def main(argv=None):
         print("  files stored         %d (%s)"
               % (stats["files_stored"], human_bytes(stats["bytes_stored"])))
         print("  files rejected       %d" % stats["files_rejected"])
+        logs = stats["log_lines"]
+        if logs:
+            print("  log lines sent       %d" % logs.get("sent", 0))
+            print("  log lines delivered  %d" % logs.get("delivered", 0))
+            print("  log batches lost     %d" % logs.get("batches_lost", 0))
+            print("  log lines dropped    %d (input buffer full)"
+                  % logs.get("dropped_at_source", 0))
     return 0
 
 

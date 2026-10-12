@@ -95,3 +95,25 @@ modules:
     in: /home/pi/screenz
     out: /home/pi/screenz
     # optional: http_port: 8080   max_fps: 10
+
+  "Journaux OT":
+    type: logs              # stream logs one way, OT -> IT
+    port: 9700              # UDP port through the diode
+    # --- input box: sources (at least one) ---
+    listen_udp: 514         # syslog over UDP; "10.0.0.1:514" binds one NIC
+    # listen_tcp: 601       # syslog over TCP (LF or octet-counted framing)
+    # tail:                 # follow files like tail -F (globs allowed)
+    #   - /var/log/plc/*.log
+    # allow_from: [192.168.1.0/24]   # accept syslog only from these networks
+    # --- output box: destinations (at least one) ---
+    out: /var/log/dyode-ot  # writes received.log here (logrotate-friendly)
+    # forward:              # and/or send on to a SIEM / syslog server
+    #   - udp://10.20.0.5:514
+    #   - tcp://siem.example:601
+    # optional: format: prefixed      prefixed | raw | json
+    # optional: split_by_source: false  one file per sending host
+    # optional: copies: 2       every batch is sent again ~0.5s later, so
+    #                           a burst of loss must hit both copies
+    # optional: max_kbps: 2000  cap on this module's share of the link
+    # optional: heartbeat: 10   seconds; stale_after: 30 warns on silence
+    # optional: tail_from: end  tail_state: /var/lib/dyode/tail.json

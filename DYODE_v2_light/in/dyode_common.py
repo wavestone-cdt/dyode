@@ -31,7 +31,7 @@ import yaml
 
 log = logging.getLogger("dyode")
 
-KNOWN_TYPES = ("folder", "modbus", "screen")
+KNOWN_TYPES = ("folder", "modbus", "screen", "logs")
 
 # Forward error correction for folder transfers (udp-sender --fec).
 # The diode has no return path, so a packet the FEC cannot repair costs the
@@ -390,6 +390,15 @@ def _normalize_module(name, props):
         props["coils"] = [parse_range(c) for c in (props.get("coils") or [])]
         if not props["registers"] and not props["coils"]:
             raise ConfigError("module %r: no registers or coils configured" % name)
+    elif mtype == "logs":
+        # Validation lives with the module.  DYODE v2 has no logstream.py
+        # (it ignores 'logs' modules with a warning), so a missing module
+        # just skips the detailed checks there.
+        try:
+            import logstream
+        except ImportError:
+            return props
+        props = logstream.normalize_props(name, props, ConfigError)
     return props
 
 

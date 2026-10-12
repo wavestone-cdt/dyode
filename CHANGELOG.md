@@ -3,6 +3,27 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [Unreleased]
+
+### Added
+
+- **Log streaming** (`type: logs`, DYODE v1). The input box collects syslog
+  over UDP and TCP (LF and RFC 6587 octet-counted framing) and follows log
+  files through rotation. The output box writes them to logrotate-friendly
+  files (`prefixed`, `raw` or `json`) and/or forwards them to a SIEM over
+  UDP or TCP. Batches are numbered, compressed (about 12× on syslog text)
+  and sent twice, spaced in time. Lost batches are reported by sequence
+  range (`logs_gap`), never silently missing. Also included: a bandwidth
+  cap, a heartbeat with stale-link detection, a source allow-list, and
+  control-character escaping. See `DYODE_v1_full/LOG_STREAMING.md`.
+- The setup wizard can add `logs` modules. `dyode_logs.py --stats`
+  totals log lines sent, delivered, lost and dropped.
+
+### Notes
+
+- DYODE v2 ignores `logs` modules with a warning, so a shared config file
+  still loads there.
+
 ## [1.0.0] - 2026-10-07
 
 First release of the Python 3 port of

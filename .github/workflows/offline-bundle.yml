@@ -3,7 +3,8 @@
 # the branch:
 #
 #   packaging/wheels/   Python packages, Python 3.11-3.14, x86_64 + aarch64
-#   packaging/debs/     udpcast + Python venv support for Ubuntu 24.04 and
+#   packaging/debs/     udpcast, Python venv support and the optional
+#                       SSH/SFTP, NFS and SMB servers, for Ubuntu 24.04 and
 #                       26.04 (amd64, arm64) and Raspberry Pi OS 12/13
 #                       (arm64); arm64 is built on native ARM runners, so no
 #                       emulation is involved

@@ -181,6 +181,38 @@ class InstallScriptTests(unittest.TestCase):
         self.assertFalse(os.path.exists(
             os.path.join(self.repo, "DYODE_v1_full", "venv")))
 
+    def services_dry_run(self, value):
+        return self.install("--online", "--variant", "v2", "--side", "out",
+                            "--with", value, "--python", sys.executable,
+                            "--dry-run", "--no-wizard")
+
+    def test_with_installs_the_requested_services(self):
+        res = self.services_dry_run("SSH, smb")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("services:     ssh, smb", res.stdout)
+        # Package names may be listed as already present on some hosts, but
+        # NFS was not asked for and must not appear at all.
+        self.assertNotIn("nfs-kernel-server", res.stdout)
+        self.assertIn("/etc/samba/smb.conf", res.stdout)
+
+    def test_with_all_and_none(self):
+        res = self.services_dry_run("all")
+        self.assertIn("services:     ssh, nfs, smb", res.stdout)
+        res = self.services_dry_run("none")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn("services:", res.stdout)
+
+    def test_with_rejects_unknown_services(self):
+        res = self.services_dry_run("ssh,ftp")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("got 'ftp'", res.stderr)
+
+    def test_with_conflicts_with_skip_os_packages(self):
+        res = self.install("--offline", "--variant", "v1", "--with", "nfs",
+                           "--skip-os-packages")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("cannot be combined with --skip-os-packages", res.stderr)
+
     def test_help(self):
         res = self.install("--help")
         self.assertEqual(res.returncode, 0)

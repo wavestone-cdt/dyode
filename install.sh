@@ -12,6 +12,11 @@
 #   --variant v1|v2           DYODE v1 (full) or v2 (light)  (asked if omitted)
 #   --side in|out             which box; needed for v2       (asked if omitted)
 #   --python PATH             use this interpreter (3.11+) for the virtualenv
+#   --with LIST               also install file-sharing services, any of
+#                             ssh,nfs,smb (or all / none)    (asked if omitted)
+#                               ssh  openssh-server, openssh-sftp-server
+#                               nfs  nfs-kernel-server, nfs-common
+#                               smb  samba, cifs-utils
 #   --skip-os-packages        do not install udpcast / python venv support
 #   --no-wizard               do not start the setup wizard afterwards
 #   -y, --yes                 do not ask for confirmation
@@ -28,7 +33,7 @@ WHEELS="$ROOT/packaging/wheels"
 DEBS="$ROOT/packaging/debs"
 OS_RELEASE="${DYODE_OS_RELEASE:-/etc/os-release}"
 
-MODE="" VARIANT="" SIDE="" PYTHON=""
+MODE="" VARIANT="" SIDE="" PYTHON="" WITH="" WITH_GIVEN=0
 ASSUME_YES=0 RUN_WIZARD=1 SKIP_OS=0 DRY_RUN=0
 
 say()  { printf '%s\n' "$*"; }
@@ -38,7 +43,7 @@ die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 run()  {
   if [ "$DRY_RUN" -eq 1 ]; then printf '   would run: %s\n' "$*"; else "$@"; fi
 }
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 interactive() { [ -t 0 ] && [ -t 1 ]; }
 
 # ---------------------------------------------------------------- arguments
@@ -54,6 +59,8 @@ while [ $# -gt 0 ]; do
     --side=*)  SIDE="${1#*=}" ;;
     --python)  PYTHON="${2:-}"; shift ;;
     --python=*) PYTHON="${1#*=}" ;;
+    --with)    WITH="${2:-}"; WITH_GIVEN=1; shift ;;
+    --with=*)  WITH="${1#*=}"; WITH_GIVEN=1 ;;
     --skip-os-packages) SKIP_OS=1 ;;
     --no-wizard) RUN_WIZARD=0 ;;
     -y|--yes)  ASSUME_YES=1 ;;
@@ -66,6 +73,32 @@ done
 case "$MODE"    in ""|offline|online) ;; *) die "--mode must be offline or online" ;; esac
 case "$VARIANT" in ""|v1|v2) ;; *) die "--variant must be v1 or v2" ;; esac
 case "$SIDE"    in ""|in|out) ;; *) die "--side must be in or out" ;; esac
+
+# Optional services for serving received files (NFS, SFTP, SMB shares).
+# Keep in step with SERVICE_PKGS in tools/build_debs.sh, which bundles them.
+service_pkgs() {
+  case "$1" in
+    ssh) echo "openssh-server openssh-sftp-server" ;;
+    nfs) echo "nfs-kernel-server nfs-common" ;;
+    smb) echo "samba cifs-utils" ;;
+  esac
+}
+normalize_with() {               # "SSH, smb" -> "ssh smb"; all; none; checks
+  local list out="" item
+  list="$(printf '%s' "$1" | tr 'A-Z,' 'a-z ' )"
+  for item in $list; do
+    case "$item" in
+      all) out="ssh nfs smb" ;;
+      none) ;;
+      ssh|nfs|smb) case " $out " in *" $item "*) ;; *) out="$out $item" ;; esac ;;
+      *) die "--with takes ssh, nfs, smb, all or none (got '$item')" ;;
+    esac
+  done
+  echo "${out# }"
+}
+WITH="$(normalize_with "$WITH")"
+[ "$SKIP_OS" -eq 1 ] && [ -n "$WITH" ] &&
+  die "--with installs OS packages, so it cannot be combined with --skip-os-packages"
 
 # Numbered choice on the terminal.  Prints the chosen number (1-based).
 choose() {                       # choose "question" default "opt1" "opt2" ...
@@ -158,6 +191,19 @@ if [ "$VARIANT" = v2 ] && [ -z "$SIDE" ]; then
   [ "$n" = 1 ] && SIDE=in || SIDE=out
 fi
 
+# File-sharing services: asked only on a terminal and only if --with was
+# not given.  Unattended installs add none unless asked to.
+if [ "$WITH_GIVEN" -eq 0 ] && [ "$SKIP_OS" -eq 0 ] && interactive; then
+  say ""
+  say "Also install file-sharing services, to serve the files this box receives?"
+  say "  ssh  SFTP and SSH        (openssh-server, openssh-sftp-server)"
+  say "  nfs  NFS server/client   (nfs-kernel-server, nfs-common)"
+  say "  smb  SMB/CIFS shares     (samba, cifs-utils)"
+  printf 'Enter any of ssh,nfs,smb, "all", or nothing for none: '
+  read -r answer || die "input ended"
+  WITH="$(normalize_with "$answer")"
+fi
+
 if [ "$VARIANT" = v1 ]; then TARGET="$ROOT/DYODE_v1_full"
 else TARGET="$ROOT/DYODE_v2_light/$SIDE"; fi
 VENV="$TARGET/venv"
@@ -180,12 +226,26 @@ elif [ -z "$PY" ]; then
   die "no Python 3.11 or newer found (and --skip-os-packages was given)"
 fi
 
+pkg_installed() {
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
+}
+SERVICE_NEW=() SERVICE_HAVE=()
+for service in $WITH; do
+  for pkg in $(service_pkgs "$service"); do
+    if pkg_installed "$pkg"; then SERVICE_HAVE+=("$pkg")
+    else SERVICE_NEW+=("$pkg"); PKGS+=("$pkg"); fi
+  done
+done
+
 say ""
 say "Plan ($MODE install of DYODE $VARIANT${SIDE:+, $SIDE side}):"
 if [ "${#PKGS[@]}" -gt 0 ]; then
   say "  OS packages:  ${PKGS[*]}  (from $([ "$MODE" = offline ] && echo "${DEB_DIR#"$ROOT"/}" || echo apt))"
 else
   say "  OS packages:  nothing needed"
+fi
+if [ -n "$WITH" ]; then
+  say "  services:     ${WITH// /, }  (${#SERVICE_NEW[@]} package(s) to install, ${#SERVICE_HAVE[@]} already present)"
 fi
 say "  Python:       $PY ($(py_ver "$PY"))"
 say "  virtualenv:   ${VENV#"$ROOT"/}"
@@ -333,6 +393,20 @@ fi
 
 say ""
 say "Installed: DYODE $VARIANT${SIDE:+ ($SIDE side)}, $MODE, in ${TARGET#"$ROOT"/}"
+
+# Debian and Ubuntu start these services the moment they are installed, with
+# their stock settings.  Say so, and where each is configured.
+if [ -n "$WITH" ]; then
+  say ""
+  say "File-sharing services (running with their default settings; review them):"
+  for service in $WITH; do
+    case "$service" in
+      ssh) say "  ssh  SFTP/SSH on port 22     /etc/ssh/sshd_config (consider key-only logins)" ;;
+      nfs) say "  nfs  NFS server, no exports  /etc/exports, then: sudo exportfs -ra" ;;
+      smb) say "  smb  Samba, no shares        /etc/samba/smb.conf, then: sudo systemctl restart smbd" ;;
+    esac
+  done
+fi
 
 # ---------------------------------------------------------------- wizard
 if [ "$RUN_WIZARD" -eq 1 ]; then

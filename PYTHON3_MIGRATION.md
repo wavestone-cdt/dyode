@@ -113,6 +113,30 @@ and `python3-venv` by hand and run `install.sh --offline --skip-os-packages`;
 the Python side still installs offline if its Python is 3.11–3.14 on x86_64
 or aarch64.
 
+### File-sharing services
+
+The output box usually serves what it receives over SFTP, NFS or SMB. Those
+servers are bundled too, for every supported system, and installed only on
+request:
+
+```bash
+sudo ./install.sh --offline --with ssh,nfs,smb    # or --with all
+```
+
+| `--with` | Packages |
+|---|---|
+| `ssh` | `openssh-server`, `openssh-sftp-server` |
+| `nfs` | `nfs-kernel-server`, `nfs-common` |
+| `smb` | `samba`, `cifs-utils` (the server and the SMB client) |
+
+Without `--with`, an interactive install asks; an unattended one installs
+none. Packages already on the host are left alone. Debian and Ubuntu start
+these services as soon as they are installed, with stock settings: SSH
+listens on port 22 with password logins allowed, while NFS and Samba share
+nothing until you configure `/etc/exports` or `/etc/samba/smb.conf`. The
+installer lists what it started and where each is configured. Keep the
+staging folder (`<out>.incoming` by default) out of any export or share.
+
 ### Refreshing the bundle
 
 The bundle is built on a machine **with** internet access:

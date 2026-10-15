@@ -6,8 +6,9 @@
 #   tools/build_debs.sh
 #   TARGETS="ubuntu-24.04/amd64 debian-13/arm64" tools/build_debs.sh
 #
-# Targets (folder/CPU), each holding udpcast and python3-venv plus
-# everything they depend on:
+# Targets (folder/CPU), each holding DYODE's own packages (udpcast,
+# python3-venv) and the optional file-sharing services that
+# `install.sh --with ssh,nfs,smb` installs, plus everything they depend on:
 #   ubuntu-24.04/amd64  ubuntu-24.04/arm64      Ubuntu 24.04, Python 3.12
 #   ubuntu-26.04/amd64  ubuntu-26.04/arm64      Ubuntu 26.04, Python 3.14
 #   debian-12/arm64                             Raspberry Pi OS bookworm, 3.11
@@ -32,10 +33,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_BASE="$ROOT/packaging/debs"
 TARGETS="${TARGETS:-ubuntu-24.04/amd64 ubuntu-24.04/arm64 ubuntu-26.04/amd64 ubuntu-26.04/arm64 debian-12/arm64 debian-13/arm64}"
-PKGS="udpcast python3-venv"
+# DYODE itself needs these.
+CORE_PKGS="udpcast python3-venv"
+# Optional services for serving received files, installed only on request
+# (install.sh --with).  Keep in step with SERVICES in install.sh.
+SERVICE_PKGS="openssh-server openssh-sftp-server nfs-common nfs-kernel-server samba cifs-utils"
+PKGS="$CORE_PKGS $SERVICE_PKGS"
 
 case "${1:-}" in
-  -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
   "") ;;
   *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
 esac

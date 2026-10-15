@@ -3,6 +3,26 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [1.3.0] - 2026-10-15
+
+### Added
+
+- **File-sharing services in the offline bundle.** `openssh-server`,
+  `openssh-sftp-server`, `nfs-kernel-server`, `nfs-common`, `samba` and
+  `cifs-utils`, with their dependencies, for every supported system: Ubuntu
+  24.04 and 26.04 (amd64, arm64) and 64-bit Raspberry Pi OS 12 and 13.
+- `install.sh --with ssh,nfs,smb` (or `all` / `none`) installs them, online or
+  offline. Interactive installs ask; unattended installs add none unless
+  asked. Packages already present are left alone, and the installer lists
+  each service it started and where it is configured.
+
+### Notes
+
+- The services start with their distribution defaults. SSH accepts password
+  logins until you change `/etc/ssh/sshd_config`; NFS and Samba share
+  nothing until configured.
+- The offline bundle grows accordingly; Samba accounts for most of it.
+
 ## [1.2.0] - 2026-10-12
 
 ### Added

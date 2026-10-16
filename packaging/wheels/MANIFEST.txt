@@ -1,5 +1,5 @@
 DYODE offline wheelhouse
-built:   2026-10-15T20:30:51Z
+built:   2026-10-16T00:05:57Z
 pythons: 3.11 3.12 3.13 3.14
 arches:  x86_64 aarch64
 pip:     pip 26.2.1

@@ -3,6 +3,18 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [1.4.1] - 2026-10-16
+
+### Documentation
+
+- **New [CAVEATS.md](CAVEATS.md)** for known limitations. First entry: large
+  folder transfers (from about 1 GB) can fail at high `bitrate` on some
+  receive-side NICs (seen with the Intel X520, not with the X710). Packets
+  overflow the receiving host's UDP socket buffer, and udpcast aborts the
+  file. CAVEATS.md covers symptoms, how to diagnose it, hardware results,
+  and workarounds (NIC choice, `net.core.rmem_*` sysctl, ring size, interrupt
+  batching, bitrate). No code changes in this release.
+
 ## [1.4.0] - 2026-10-15
 
 ### Added

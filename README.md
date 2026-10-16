@@ -16,6 +16,7 @@ There are two versions of hardware targeted by DYODE:
 
 This fork runs on Python 3.11+ (the original code was Python 2). What changed,
 and how to deploy it, is in [PYTHON3_MIGRATION.md](PYTHON3_MIGRATION.md).
+Known limitations and hardware-specific issues are in [CAVEATS.md](CAVEATS.md).
 
 To configure a box, run the setup wizard from this folder:
 

@@ -236,6 +236,23 @@ class InstallScriptTests(unittest.TestCase):
             self.assertIn(flag, res.stdout)
 
 
+class ShippedFilesTests(unittest.TestCase):
+    """Regression: .gitignore's stock 'lib/' rule silently kept
+    lib/install-shares.sh out of git, so a release would have shipped an
+    install.sh that sources a file that is not there."""
+
+    def test_everything_install_sh_sources_is_tracked(self):
+        if not shutil.which("git") or not os.path.isdir(os.path.join(REPO, ".git")):
+            self.skipTest("not a git checkout")
+        with open(INSTALL) as fh:
+            sourced = re.findall(r'^\s*\.\s+"\$ROOT/([^"]+)"', fh.read(), re.M)
+        self.assertTrue(sourced, "expected install.sh to source lib files")
+        for rel in sourced:
+            res = subprocess.run(["git", "ls-files", "--error-unmatch", rel],
+                                 cwd=REPO, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, "%s is not tracked by git" % rel)
+
+
 class WheelhouseCoverageTests(unittest.TestCase):
     """Every requirement, for every Python and CPU the bundle promises.
 

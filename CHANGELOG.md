@@ -3,10 +3,24 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
-## [Unreleased]
+## [1.4.0] - 2026-10-15
 
 ### Added
 
+- **File-share setup.** After the setup wizard, `install.sh` asks whether to
+  share a DYODE folder over NFS and/or SMB, on either box: received files on
+  the output box (read-only by default), a drop folder on the input box
+  (read-write). Unattended: `--share-nfs PATH=CLIENTS[:rw]`,
+  `--share-smb PATH=USER[:rw]`, `--smb-password-file`, and `--shares-only` to
+  change shares on an installed box without reinstalling.
+- Shares live in one managed block in `/etc/exports` and
+  `/etc/samba/smb.conf`; everything outside it is untouched. Re-running the
+  same command changes nothing, so it suits Ansible. `smb.conf` is checked
+  with `testparm` before it is installed, a rejected export is rolled back,
+  and every file changed keeps a backup.
+- Refused before anything is written: sharing DYODE's staging folder or a
+  folder containing it, NFS to everyone, SMB guest access, SMB as root, and
+  paths or names that could inject settings into either file.
 - **Clients for the file-sharing services.** `--with ssh-client`,
   `nfs-client` and `smb-client` (or `clients` for all three) install only
   the client: `sftp`/`scp`/`ssh`, `mount -t nfs`, and `mount -t cifs` plus

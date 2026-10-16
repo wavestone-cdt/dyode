@@ -146,6 +146,65 @@ nothing until you configure `/etc/exports` or `/etc/samba/smb.conf`. The
 installer lists what it started and where each is configured. Keep the
 staging folder (`<out>.incoming` by default) out of any export or share.
 
+### Setting up shares
+
+Either box can share a DYODE folder: the output box its received files
+(usually read-only), the input box a drop folder for files to send
+(read-write). After the setup wizard, an interactive install asks:
+
+```
+Set up a share? (y/n) [n]: y
+Folder to share [/srv/dyode/out]:
+Read-only or read-write? (ro/rw) [ro]:
+Share over nfs, smb or both? [both]:
+NFS: which machines may mount it (address, host or subnet; comma-separated): 10.0.2.0/24
+SMB: account allowed to connect (an existing Linux user): dyodeshare
+SMB: share name [dyode-out]:
+```
+
+Unattended, for scripts and Ansible, the same with flags:
+
+```bash
+sudo ./install.sh --offline --variant v1 --with nfs,smb --yes --no-wizard \
+  --share-nfs /srv/dyode/out=10.0.2.0/24,10.0.3.7 \
+  --share-smb /srv/dyode/out=dyodeshare \
+  --smb-password-file /root/dyode-smb.pw         # 'user:password' lines, mode 600
+
+sudo ./install.sh --shares-only --share-nfs /srv/dyode/in=10.0.2.0/24:rw   # shares only
+```
+
+| Flag | Meaning |
+|---|---|
+| `--share-nfs PATH=CLIENTS[:ro\|:rw]` | export to addresses, hosts or subnets (comma-separated); repeatable |
+| `--share-smb PATH=USER[:ro\|:rw]` | share to one existing account, as `dyode-<folder>`; repeatable |
+| `--smb-password-file FILE` | SMB passwords for unattended runs; an account that already has one keeps it |
+| `--shares-only` | set up shares on an installed box and install nothing else |
+| `--no-shares` | do not ask |
+
+**How it writes.** NFS shares go in `/etc/exports`, SMB shares in
+`/etc/samba/smb.conf`, each inside one block marked `# BEGIN DYODE` /
+`# END DYODE`. Everything outside the block — your own shares — is left as
+it was. The block is rewritten in full each run, so the flags declare the
+complete set of DYODE shares for each protocol given, and running the same
+command again changes nothing (no rewrite, no new backup). A run that only
+declares NFS shares does not touch `smb.conf`, and vice versa. Every file
+changed keeps a timestamped backup beside it.
+
+**What it refuses**, before writing anything:
+
+- a folder that contains DYODE's staging area (`*.incoming`), or the staging
+  folder itself — its files are partial and unverified;
+- NFS to everyone (`*`, `*.*`, `0.0.0.0/0`, `::/0`): clients must be named;
+- SMB guest access (never written) and SMB as `root`; the account must exist
+  and must end up with an SMB password;
+- paths or names containing anything that could break a line or smuggle a
+  setting into either file.
+
+`smb.conf` is checked with `testparm` before it replaces the live file, and
+an export that `exportfs` rejects is rolled back. Shares are read-only unless
+`:rw` is given. Read-write needs the folder itself to be writable by the
+SMB account, or by the NFS clients' users (remote root is mapped to nobody).
+
 ### Refreshing the bundle
 
 The bundle is built on a machine **with** internet access:

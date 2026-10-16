@@ -16,6 +16,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+# ...except the installer's own lib/, which install.sh sources
+!/lib/
 lib64/
 parts/
 sdist/

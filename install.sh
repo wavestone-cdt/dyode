@@ -22,6 +22,16 @@
 #                               smb-client  mount.cifs, smbclient only
 #                               all = ssh,nfs,smb   clients = the three
 #                               clients   none = nothing
+#   --share-nfs PATH=CLIENTS[:ro|:rw]
+#                             export PATH over NFS to CLIENTS (address, host or
+#                             subnet; comma-separated).  Repeatable.
+#   --share-smb PATH=USER[:ro|:rw]
+#                             share PATH over SMB to one existing account.
+#                             Repeatable.  Shares are read-only unless :rw.
+#   --smb-password-file FILE  'user:password' lines for SMB accounts, for
+#                             unattended installs (keep it mode 600)
+#   --no-shares               do not ask about file shares
+#   --shares-only             only set up the shares; install nothing
 #   --skip-os-packages        do not install udpcast / python venv support
 #   --no-wizard               do not start the setup wizard afterwards
 #   -y, --yes                 do not ask for confirmation
@@ -40,6 +50,7 @@ OS_RELEASE="${DYODE_OS_RELEASE:-/etc/os-release}"
 
 MODE="" VARIANT="" SIDE="" PYTHON="" WITH="" WITH_GIVEN=0
 ASSUME_YES=0 RUN_WIZARD=1 SKIP_OS=0 DRY_RUN=0
+SHARES_ONLY=0 NO_SHARES=0 SHARE_NFS_SPECS=() SHARE_SMB_SPECS=() SMB_PW_FILE=""
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -50,6 +61,8 @@ run()  {
 }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 interactive() { [ -t 0 ] && [ -t 1 ]; }
+# shellcheck source=lib/install-shares.sh
+. "$ROOT/lib/install-shares.sh"
 
 # ---------------------------------------------------------------- arguments
 while [ $# -gt 0 ]; do
@@ -66,6 +79,14 @@ while [ $# -gt 0 ]; do
     --python=*) PYTHON="${1#*=}" ;;
     --with)    WITH="${2:-}"; WITH_GIVEN=1; shift ;;
     --with=*)  WITH="${1#*=}"; WITH_GIVEN=1 ;;
+    --share-nfs) SHARE_NFS_SPECS+=("${2:-}"); shift ;;
+    --share-nfs=*) SHARE_NFS_SPECS+=("${1#*=}") ;;
+    --share-smb) SHARE_SMB_SPECS+=("${2:-}"); shift ;;
+    --share-smb=*) SHARE_SMB_SPECS+=("${1#*=}") ;;
+    --smb-password-file) SMB_PW_FILE="${2:-}"; shift ;;
+    --smb-password-file=*) SMB_PW_FILE="${1#*=}" ;;
+    --no-shares) NO_SHARES=1 ;;
+    --shares-only) SHARES_ONLY=1 ;;
     --skip-os-packages) SKIP_OS=1 ;;
     --no-wizard) RUN_WIZARD=0 ;;
     -y|--yes)  ASSUME_YES=1 ;;
@@ -95,9 +116,10 @@ service_pkgs() {
 }
 SERVICE_NAMES="ssh nfs smb ssh-client nfs-client smb-client"
 normalize_with() {     # "SSH, smb-client" -> "ssh smb-client"; all; clients; none
-  local list out="" item add
+  local list out="" item add items
   list="$(printf '%s' "$1" | tr 'A-Z,' 'a-z ' )"
-  for item in $list; do
+  read -r -a items <<<"$list"          # no wildcard expansion, unlike $list
+  for item in "${items[@]}"; do
     case "$item" in
       all)     add="ssh nfs smb" ;;
       clients) add="ssh-client nfs-client smb-client" ;;
@@ -116,6 +138,39 @@ normalize_with() {     # "SSH, smb-client" -> "ssh smb-client"; all; clients; no
 WITH="$(normalize_with "$WITH")"
 [ "$SKIP_OS" -eq 1 ] && [ -n "$WITH" ] &&
   die "--with installs OS packages, so it cannot be combined with --skip-os-packages"
+
+# File shares: validate every spec now, before anything is installed.
+if [ -n "$SMB_PW_FILE" ]; then
+  [ -r "$SMB_PW_FILE" ] || die "cannot read --smb-password-file $SMB_PW_FILE"
+  case "$(stat -c %a "$SMB_PW_FILE")" in
+    *00) ;; *) warn "$SMB_PW_FILE is readable by other users; chmod 600 it" ;;
+  esac
+  SMB_PASSWORD_FILE="$SMB_PW_FILE"
+fi
+for spec in "${SHARE_NFS_SPECS[@]}"; do add_nfs_share "$spec"; done
+for spec in "${SHARE_SMB_SPECS[@]}"; do add_smb_share "$spec"; done
+if [ "${#NFS_SHARES[@]}" -gt 0 ] && ! command -v exportfs >/dev/null 2>&1; then
+  case " $WITH " in *" nfs "*) ;; *) die "--share-nfs needs the NFS server: add --with nfs" ;; esac
+fi
+if [ "${#SMB_SHARES[@]}" -gt 0 ] && ! command -v testparm >/dev/null 2>&1; then
+  case " $WITH " in *" smb "*) ;; *) die "--share-smb needs Samba: add --with smb" ;; esac
+fi
+
+# --shares-only: set up file shares on an installed box and stop.
+if [ "$SHARES_ONLY" -eq 1 ]; then
+  [ "$(id -u)" -eq 0 ] || [ "$DRY_RUN" -eq 1 ] || [ -n "${DYODE_ETC:-}" ] ||
+    die "setting up shares needs root: run with sudo"
+  if [ "${#NFS_SHARES[@]}" -eq 0 ] && [ "${#SMB_SHARES[@]}" -eq 0 ]; then
+    interactive || die "--shares-only needs --share-nfs / --share-smb (no terminal to ask on)"
+    cfg="" py=""
+    for t in "$ROOT/DYODE_v1_full" "$ROOT/DYODE_v2_light/in" "$ROOT/DYODE_v2_light/out"; do
+      if [ -f "$t/config.yaml" ] && [ -x "$t/venv/bin/python" ]; then cfg="$t/config.yaml" py="$t/venv/bin/python"; break; fi
+    done
+    interactive_shares "$cfg" "$py"
+  fi
+  apply_shares
+  exit 0
+fi
 
 # Numbered choice on the terminal.  Prints the chosen number (1-based).
 choose() {                       # choose "question" default "opt1" "opt2" ...
@@ -271,6 +326,7 @@ say "  Python:       $PY ($(py_ver "$PY"))"
 say "  virtualenv:   ${VENV#"$ROOT"/}"
 say "  packages:     ${REQ#"$ROOT"/}  (from $([ "$MODE" = offline ] && echo "${WHEELS#"$ROOT"/}" || echo PyPI))"
 [ "$RUN_WIZARD" -eq 1 ] && say "  then:         the setup wizard"
+describe_shares
 
 if [ "$ASSUME_YES" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
   interactive || die "pass --yes to proceed without a terminal"
@@ -422,8 +478,8 @@ if [ -n "$WITH" ]; then
   for service in $WITH; do
     case "$service" in
       ssh) say "  ssh  SFTP/SSH on port 22     /etc/ssh/sshd_config (consider key-only logins)" ;;
-      nfs) say "  nfs  NFS server, no exports  /etc/exports, then: sudo exportfs -ra" ;;
-      smb) say "  smb  Samba, no shares        /etc/samba/smb.conf, then: sudo systemctl restart smbd" ;;
+      nfs) say "  nfs  NFS server              /etc/exports (or: ./install.sh --shares-only)" ;;
+      smb) say "  smb  Samba server            /etc/samba/smb.conf (or: ./install.sh --shares-only)" ;;
       ssh-client) say "  ssh-client  sftp, scp, ssh  (no server)" ;;
       nfs-client) say "  nfs-client  mount -t nfs    (no server)" ;;
       smb-client) say "  smb-client  mount -t cifs, smbclient  (no server)" ;;
@@ -439,8 +495,17 @@ if [ "$RUN_WIZARD" -eq 1 ]; then
     say "   would run: $VENV/bin/python dyode_setup.py ${args[*]}"
   elif interactive; then
     step "setup wizard"
-    exec "$VENV/bin/python" "$ROOT/dyode_setup.py" "${args[@]}"
+    "$VENV/bin/python" "$ROOT/dyode_setup.py" "${args[@]}" ||
+      warn "the setup wizard did not finish; rerun it with: $VENV/bin/python $ROOT/dyode_setup.py ${args[*]}"
   else
     say "Next: $VENV/bin/python $ROOT/dyode_setup.py ${args[*]}"
   fi
 fi
+
+# ---------------------------------------------------------------- shares
+# After the wizard, so its config.yaml can suggest the folders to share.
+if [ "${#NFS_SHARES[@]}" -eq 0 ] && [ "${#SMB_SHARES[@]}" -eq 0 ] &&
+   [ "$NO_SHARES" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && interactive; then
+  interactive_shares "$TARGET/config.yaml" "$VENV/bin/python"
+fi
+apply_shares

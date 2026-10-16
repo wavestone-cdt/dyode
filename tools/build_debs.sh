@@ -36,8 +36,10 @@ TARGETS="${TARGETS:-ubuntu-24.04/amd64 ubuntu-24.04/arm64 ubuntu-26.04/amd64 ubu
 # DYODE itself needs these.
 CORE_PKGS="udpcast python3-venv"
 # Optional services for serving received files, installed only on request
-# (install.sh --with).  Keep in step with SERVICES in install.sh.
-SERVICE_PKGS="openssh-server openssh-sftp-server nfs-common nfs-kernel-server samba cifs-utils"
+# (install.sh --with).  Keep in step with service_pkgs() in install.sh.
+# Clients are listed explicitly so a client-only install (--with
+# ssh-client,...) works even where no server pulls them in.
+SERVICE_PKGS="openssh-server openssh-sftp-server openssh-client nfs-common nfs-kernel-server samba cifs-utils smbclient"
 PKGS="$CORE_PKGS $SERVICE_PKGS"
 
 case "${1:-}" in

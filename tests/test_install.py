@@ -202,10 +202,26 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertNotIn("services:", res.stdout)
 
+    def test_with_clients_only(self):
+        res = self.services_dry_run("clients")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("services:     ssh-client, nfs-client, smb-client", res.stdout)
+        # No server is installed for a client-only request.
+        for server in ("openssh-server", "nfs-kernel-server", "samba "):
+            self.assertNotIn(server, res.stdout)
+
+    def test_overlapping_groups_count_packages_once(self):
+        res = self.services_dry_run("nfs-client,nfs")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        line = [l for l in res.stdout.splitlines() if "services:" in l][0]
+        # nfs-kernel-server + nfs-common, whether to install or present: 2.
+        numbers = [int(w) for w in line.replace("(", " ").split() if w.isdigit()]
+        self.assertEqual(sum(numbers), 2, line)
+
     def test_with_rejects_unknown_services(self):
-        res = self.services_dry_run("ssh,ftp")
+        res = self.services_dry_run("ssh,sftp")
         self.assertNotEqual(res.returncode, 0)
-        self.assertIn("got 'ftp'", res.stderr)
+        self.assertIn("got 'sftp'", res.stderr)
 
     def test_with_conflicts_with_skip_os_packages(self):
         res = self.install("--offline", "--variant", "v1", "--with", "nfs",

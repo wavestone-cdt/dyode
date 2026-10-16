@@ -125,9 +125,18 @@ sudo ./install.sh --offline --with ssh,nfs,smb    # or --with all
 
 | `--with` | Packages |
 |---|---|
-| `ssh` | `openssh-server`, `openssh-sftp-server` |
+| `ssh` | `openssh-server`, `openssh-sftp-server`, `openssh-client` |
 | `nfs` | `nfs-kernel-server`, `nfs-common` |
-| `smb` | `samba`, `cifs-utils` (the server and the SMB client) |
+| `smb` | `samba`, `cifs-utils`, `smbclient` |
+| `ssh-client` | `openssh-client` — `sftp`, `scp`, `ssh` |
+| `nfs-client` | `nfs-common` — `mount -t nfs` |
+| `smb-client` | `cifs-utils`, `smbclient` — `mount -t cifs`, and browsing shares without mounting |
+| `all` | `ssh,nfs,smb` |
+| `clients` | `ssh-client,nfs-client,smb-client` |
+
+Each server comes with its client, so a box can mount or connect to its own
+shares as `localhost` to test them. The `-client` choices install the client
+alone, for a box that only connects out and should run no server.
 
 Without `--with`, an interactive install asks; an unattended one installs
 none. Packages already on the host are left alone. Debian and Ubuntu start

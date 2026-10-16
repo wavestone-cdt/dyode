@@ -3,6 +3,18 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [Unreleased]
+
+### Added
+
+- **Clients for the file-sharing services.** `--with ssh-client`,
+  `nfs-client` and `smb-client` (or `clients` for all three) install only
+  the client: `sftp`/`scp`/`ssh`, `mount -t nfs`, and `mount -t cifs` plus
+  `smbclient`. For a box that connects out and should run no server.
+- `smbclient` is now bundled, and `--with smb` installs it alongside Samba;
+  `--with ssh` now names `openssh-client` explicitly. Each server therefore
+  comes with its client, so its shares can be tested as `localhost`.
+
 ## [1.3.0] - 2026-10-15
 
 ### Added

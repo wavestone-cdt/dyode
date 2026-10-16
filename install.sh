@@ -12,11 +12,16 @@
 #   --variant v1|v2           DYODE v1 (full) or v2 (light)  (asked if omitted)
 #   --side in|out             which box; needed for v2       (asked if omitted)
 #   --python PATH             use this interpreter (3.11+) for the virtualenv
-#   --with LIST               also install file-sharing services, any of
-#                             ssh,nfs,smb (or all / none)    (asked if omitted)
-#                               ssh  openssh-server, openssh-sftp-server
-#                               nfs  nfs-kernel-server, nfs-common
-#                               smb  samba, cifs-utils
+#   --with LIST               also install file-sharing services and/or
+#                             clients, comma-separated       (asked if omitted)
+#                               ssh         SSH/SFTP server (+ client)
+#                               nfs         NFS server (+ client)
+#                               smb         Samba server (+ clients)
+#                               ssh-client  sftp, scp, ssh only
+#                               nfs-client  mount.nfs only
+#                               smb-client  mount.cifs, smbclient only
+#                               all = ssh,nfs,smb   clients = the three
+#                               clients   none = nothing
 #   --skip-os-packages        do not install udpcast / python venv support
 #   --no-wizard               do not start the setup wizard afterwards
 #   -y, --yes                 do not ask for confirmation
@@ -78,21 +83,33 @@ case "$SIDE"    in ""|in|out) ;; *) die "--side must be in or out" ;; esac
 # Keep in step with SERVICE_PKGS in tools/build_debs.sh, which bundles them.
 service_pkgs() {
   case "$1" in
-    ssh) echo "openssh-server openssh-sftp-server" ;;
+    # Servers bring their own client, so a box can test its shares locally.
+    ssh) echo "openssh-server openssh-sftp-server openssh-client" ;;
     nfs) echo "nfs-kernel-server nfs-common" ;;
-    smb) echo "samba cifs-utils" ;;
+    smb) echo "samba cifs-utils smbclient" ;;
+    # Clients alone: for a box that only connects out, with no server.
+    ssh-client) echo "openssh-client" ;;
+    nfs-client) echo "nfs-common" ;;
+    smb-client) echo "cifs-utils smbclient" ;;
   esac
 }
-normalize_with() {               # "SSH, smb" -> "ssh smb"; all; none; checks
-  local list out="" item
+SERVICE_NAMES="ssh nfs smb ssh-client nfs-client smb-client"
+normalize_with() {     # "SSH, smb-client" -> "ssh smb-client"; all; clients; none
+  local list out="" item add
   list="$(printf '%s' "$1" | tr 'A-Z,' 'a-z ' )"
   for item in $list; do
     case "$item" in
-      all) out="ssh nfs smb" ;;
-      none) ;;
-      ssh|nfs|smb) case " $out " in *" $item "*) ;; *) out="$out $item" ;; esac ;;
-      *) die "--with takes ssh, nfs, smb, all or none (got '$item')" ;;
+      all)     add="ssh nfs smb" ;;
+      clients) add="ssh-client nfs-client smb-client" ;;
+      none)    add="" ;;
+      *) case " $SERVICE_NAMES " in
+           *" $item "*) add="$item" ;;
+           *) die "--with takes ssh, nfs, smb, ssh-client, nfs-client, smb-client, all, clients or none (got '$item')" ;;
+         esac ;;
     esac
+    for a in $add; do
+      case " $out " in *" $a "*) ;; *) out="$out $a" ;; esac
+    done
   done
   echo "${out# }"
 }
@@ -195,11 +212,11 @@ fi
 # not given.  Unattended installs add none unless asked to.
 if [ "$WITH_GIVEN" -eq 0 ] && [ "$SKIP_OS" -eq 0 ] && interactive; then
   say ""
-  say "Also install file-sharing services, to serve the files this box receives?"
-  say "  ssh  SFTP and SSH        (openssh-server, openssh-sftp-server)"
-  say "  nfs  NFS server/client   (nfs-kernel-server, nfs-common)"
-  say "  smb  SMB/CIFS shares     (samba, cifs-utils)"
-  printf 'Enter any of ssh,nfs,smb, "all", or nothing for none: '
+  say "Also install file-sharing services or clients?"
+  say "  ssh  nfs  smb                     servers (each with its client)"
+  say "  ssh-client  nfs-client  smb-client  clients only, no server"
+  say "  all = every server    clients = every client"
+  printf 'Enter a comma-separated list, or nothing for none: '
   read -r answer || die "input ended"
   WITH="$(normalize_with "$answer")"
 fi
@@ -230,8 +247,11 @@ pkg_installed() {
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
 }
 SERVICE_NEW=() SERVICE_HAVE=()
+SEEN=" "
 for service in $WITH; do
   for pkg in $(service_pkgs "$service"); do
+    case "$SEEN" in *" $pkg "*) continue ;; esac   # in two groups
+    SEEN="$SEEN$pkg "
     if pkg_installed "$pkg"; then SERVICE_HAVE+=("$pkg")
     else SERVICE_NEW+=("$pkg"); PKGS+=("$pkg"); fi
   done
@@ -398,12 +418,15 @@ say "Installed: DYODE $VARIANT${SIDE:+ ($SIDE side)}, $MODE, in ${TARGET#"$ROOT"
 # their stock settings.  Say so, and where each is configured.
 if [ -n "$WITH" ]; then
   say ""
-  say "File-sharing services (running with their default settings; review them):"
+  say "File sharing (servers run with their default settings; review them):"
   for service in $WITH; do
     case "$service" in
       ssh) say "  ssh  SFTP/SSH on port 22     /etc/ssh/sshd_config (consider key-only logins)" ;;
       nfs) say "  nfs  NFS server, no exports  /etc/exports, then: sudo exportfs -ra" ;;
       smb) say "  smb  Samba, no shares        /etc/samba/smb.conf, then: sudo systemctl restart smbd" ;;
+      ssh-client) say "  ssh-client  sftp, scp, ssh  (no server)" ;;
+      nfs-client) say "  nfs-client  mount -t nfs    (no server)" ;;
+      smb-client) say "  smb-client  mount -t cifs, smbclient  (no server)" ;;
     esac
   done
 fi

@@ -93,20 +93,39 @@ Two kernel settings on the **receiving** box. `install.sh` writes them to
 ```
 # Write received data to disk continuously instead of in one burst.
 vm.dirty_background_bytes = 67108864     # start writing at 64 MB
-vm.dirty_bytes = 1073741824              # hard ceiling, normally never reached
+vm.dirty_bytes = 2147483648              # ceiling: 20% of RAM, at most 2 GB
 
 # Room for short pauses: ~70 ms of traffic at 900 Mbit/s.
 net.core.rmem_default = 8388608
 net.core.rmem_max = 16777216
 ```
 
-- **Writeback** is the setting that fixed it. With writeback starting at
-  64 MB, the disk receives a steady ~110 MB/s stream that it easily keeps up
-  with, and no burst ever happens. The `*_bytes` settings replace
-  `vm.dirty_ratio` and `vm.dirty_background_ratio`, which then read 0. That is
-  expected.
+The values shown are for a box with 10 GB of RAM or more.
+
+- **Writeback start** (`vm.dirty_background_bytes`) is the setting that fixed
+  it. With writeback starting at 64 MB, the disk receives a steady ~110 MB/s
+  stream that it easily keeps up with, and no burst ever happens.
+- **The ceiling** (`vm.dirty_bytes`) is headroom for a disk that falls behind
+  for a while. Linux starts pausing the writer gently from about halfway up,
+  and hard at the ceiling, so the ceiling is how much unwritten data can
+  build up before `udp-receiver` gets paused.
+  - It scales with RAM like the kernel's own default (20%), capped at 2 GB
+    and never below 128 MB. Large boxes get about 1 GB of headroom, and a
+    small box (a Raspberry Pi) is never asked to hold more unwritten data than
+    it can spare.
+  - On boxes under about 1.25 GB of RAM, writeback starts at a quarter of the
+    ceiling instead of 64 MB.
+  - The ceiling is only reached if the disk is slower than the link. Then no
+    ceiling is enough for a long transfer, and the fix is a lower `bitrate`.
+    See [Sustained disk speed](#sustained-disk-speed).
+- The `*_bytes` settings replace `vm.dirty_ratio` and
+  `vm.dirty_background_ratio`, which then read 0. That is expected.
 - **The larger socket buffer** did not fix it alone. It is kept as margin for
   other short pauses.
+
+1.4.2 used a fixed 1 GB ceiling. 1.4.3 rewrites the file with the
+RAM-scaled value. Run `sudo ./install.sh --tuning-only` to update an
+existing box.
 
 When it is installed:
 
@@ -130,6 +149,63 @@ Setting the `*_ratio` values switches the `*_bytes` ones off again.
 The settings apply to the whole box, which suits a dedicated diode box. The
 cost is that data is written to disk sooner, which on a diode box is also
 safer.
+
+### Sustained disk speed
+
+The writeback settings stop *bursts* from stalling the receiver. They cannot
+make a disk faster than the link. Many SSDs absorb writes into a fast cache
+and slow down sharply once it is full, and encryption adds CPU work to every
+block. A short `dd` test can therefore look fine while a 10 GB transfer
+outruns the disk.
+
+Measure the receive disk with more data than your largest file, bypassing
+the cache:
+
+```
+cd <receive/staging folder>
+dd if=/dev/zero of=./ddtest bs=1M count=20000 oflag=direct status=progress; rm ./ddtest
+```
+
+Watch the speed as it runs. Set `bitrate` so the link stays below the slowest
+sustained figure. For example, a disk that settles at 90 MB/s (720 Mbit/s)
+calls for `bitrate` of about 650. A full gigabit diode needs a disk that
+sustains about 120 MB/s.
+
+---
+
+## Files larger than about 5 minutes' transfer time discarded on arrival
+
+**Status:** fixed in 1.4.3. On earlier versions, use the workaround below.
+
+On the receiving box, each batch has a `batch_timeout` (default 300 s). If no
+file of the batch has arrived within that time, the batch is closed and its
+missing files are named in the log. Up to 1.4.2, the clock only reset when a
+**finished** file was stored. A single file that took longer than
+`batch_timeout` to transfer therefore had its batch closed while it was still
+arriving. When it then arrived, intact, it was discarded:
+
+```
+WARNING file big.bin never arrived (batch 1a2b3c4d, timeout)
+WARNING batch 1a2b3c4d closed with 1 file(s) never received (timeout)
+WARNING received a file with no manifest pending; discarded
+```
+
+How long a large file takes is easy to underestimate. With the default FEC
+(`8x16/64`), the single-threaded encoder caps a gigabit link at about
+350–400 Mbit/s on server hardware, whatever `bitrate` says. That makes a
+10 GB file take roughly 4½–5½ minutes. The `batch_sent` event on the sending
+box records each batch's `duration_s` and `mbps`.
+
+Since 1.4.3 the clock also counts data still arriving: a batch only times out
+after `batch_timeout` with nothing received at all.
+
+**Workaround on earlier versions:** in the receiving box's folder module, set
+`batch_timeout` longer than your longest single-file transfer, then restart
+DYODE:
+
+```yaml
+    batch_timeout: 3600
+```
 
 If you applied these settings by hand before 1.4.2 (for example
 `90-dyode.conf` and `91-dyode-writeback.conf`), they can stay. They hold the

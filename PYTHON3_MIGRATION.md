@@ -565,7 +565,8 @@ refusing to start.
 On a box that receives through the diode (v1, or v2 `--side out`),
 `install.sh` writes `/etc/sysctl.d/90-dyode-receive.conf` and loads it.
 The file makes the kernel write received data to disk continuously
-(`vm.dirty_background_bytes` 64 MB, `vm.dirty_bytes` 1 GB) instead of in one
+(`vm.dirty_background_bytes` 64 MB; `vm.dirty_bytes` 20% of RAM, at most
+2 GB) instead of in one
 burst every 30 s. It also raises the UDP receive buffer
 (`net.core.rmem_default` 8 MB). Without it, files over about 1 GB failed
 part-way on a fast link to an encrypted receive disk. The background, and

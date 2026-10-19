@@ -11,7 +11,13 @@
 #     the backlog at once.  On a box with a lot of RAM nothing else triggers
 #     writeback, so every ~30 s of a large transfer (about 1 GB) hit the disk
 #     in one burst, and on an encrypted (LUKS) disk that burst stalled the
-#     receiver.  Starting writeback at 64 MB keeps it continuous and small.
+#     receiver.  Starting writeback early (64 MB) keeps it continuous and
+#     small.  The ceiling (vm.dirty_bytes) is where Linux starts pausing the
+#     writer -- gently from halfway up -- so it is headroom for a disk that
+#     falls behind for a while.  It scales with RAM like the kernel's own
+#     default (20%), capped at 2 GB: large boxes get ample headroom, small
+#     ones (a Raspberry Pi) are not asked to hold more unwritten data than
+#     they can spare.
 #   - The default socket buffer (~208 KB) is about 2 ms of traffic at
 #     900 Mbit/s.  udpcast does not size its own unless told to, so it uses
 #     the system default; 8 MB gives ~70 ms of slack.
@@ -23,21 +29,42 @@
 
 TUNE_ETC="${DYODE_ETC:-/etc}"           # override: tests
 TUNE_FILE="$TUNE_ETC/sysctl.d/90-dyode-receive.conf"
+TUNE_MEMINFO="${DYODE_MEMINFO:-/proc/meminfo}"   # override: tests
+
+MIB=1048576
+DIRTY_MAX=$((2048 * MIB))        # ceiling on big boxes
+DIRTY_MIN=$((128 * MIB))         # floor on tiny ones
+BACKGROUND_MAX=$((64 * MIB))     # start writing here
+
+# Sets DIRTY_BYTES, BACKGROUND_BYTES and MEM_MIB from this box's RAM.
+tuning_values() {
+  local kb
+  kb="$(awk '/^MemTotal:/{print $2; exit}' "$TUNE_MEMINFO" 2>/dev/null || true)"
+  case "$kb" in ''|*[!0-9]*) kb=$((4096 * 1024)) ;; esac   # unknown: assume 4 GB
+  MEM_MIB=$((kb / 1024))
+  DIRTY_BYTES=$((kb * 1024 / 5))
+  [ "$DIRTY_BYTES" -gt "$DIRTY_MAX" ] && DIRTY_BYTES=$DIRTY_MAX
+  [ "$DIRTY_BYTES" -lt "$DIRTY_MIN" ] && DIRTY_BYTES=$DIRTY_MIN
+  BACKGROUND_BYTES=$((DIRTY_BYTES / 4))
+  [ "$BACKGROUND_BYTES" -gt "$BACKGROUND_MAX" ] && BACKGROUND_BYTES=$BACKGROUND_MAX
+  return 0
+}
 
 tuning_wanted() {                # receives through the diode?
   [ "${NO_TUNING:-0}" -eq 0 ] && [ "${SIDE:-}" != in ]
 }
 
 tuning_content() {
-  cat <<'EOF'
+  tuning_values
+  cat <<EOF
 # Managed by DYODE install.sh (rewritten on each run; --no-tuning to skip).
 # Keeps udp-receiver from stalling during large transfers.  See CAVEATS.md.
 
 # Write received data to disk continuously instead of in one burst every
 # 30 s.  These replace vm.dirty_background_ratio / vm.dirty_ratio, which then
-# read 0.
-vm.dirty_background_bytes = 67108864
-vm.dirty_bytes = 1073741824
+# read 0.  Ceiling: 20% of this box's ${MEM_MIB} MB of RAM, at most 2 GB.
+vm.dirty_background_bytes = $BACKGROUND_BYTES
+vm.dirty_bytes = $DIRTY_BYTES
 
 # Room for short pauses: ~70 ms of traffic at 900 Mbit/s.
 net.core.rmem_default = 8388608
@@ -75,7 +102,8 @@ apply_tuning() {
   esac
   if command -v sysctl >/dev/null 2>&1; then
     if sysctl -q -p "$TUNE_FILE" >/dev/null; then
-      say "   loaded: writeback starts at 64 MB, receive buffer 8 MB"
+      tuning_values
+      say "   loaded: writeback starts at $((BACKGROUND_BYTES / MIB)) MB, ceiling $((DIRTY_BYTES / MIB)) MB, receive buffer 8 MB"
     else
       warn "sysctl could not load $TUNE_FILE; it will apply at the next boot"
     fi

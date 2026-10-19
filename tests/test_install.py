@@ -98,6 +98,9 @@ class InstallScriptTests(unittest.TestCase):
         with open(sysctl, "w") as fh:
             fh.write("#!/bin/sh\nexit 0\n")
         os.chmod(sysctl, 0o755)
+        self.meminfo = os.path.join(self.tmp, "meminfo")
+        with open(self.meminfo, "w") as fh:
+            fh.write("MemTotal:       268435456 kB\n")      # 256 GB
 
     def write_sums(self):
         subprocess.run("sha256sum -- *.whl > SHA256SUMS", shell=True,
@@ -109,6 +112,7 @@ class InstallScriptTests(unittest.TestCase):
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
             timeout=180, cwd=self.repo,
             env=dict(os.environ, DYODE_ETC=self.etc,
+                     DYODE_MEMINFO=self.meminfo,
                      PATH=self.bin + ":" + os.environ.get("PATH", "")))
 
     def offline_v2_out(self, *extra):
@@ -212,7 +216,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         path = os.path.join(self.etc, "sysctl.d", "90-dyode-receive.conf")
         with open(path) as fh:
-            self.assertIn("vm.dirty_bytes = 1073741824", fh.read())
+            self.assertIn("vm.dirty_bytes = 2147483648", fh.read())
 
     def services_dry_run(self, value):
         return self.install("--online", "--variant", "v2", "--side", "out",

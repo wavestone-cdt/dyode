@@ -658,16 +658,29 @@ class FolderReceiver:
             log.warning("batch %s closed with %d file(s) never received (%s)",
                         batch.id[:8], batch.outstanding, reason)
 
-    def sweep(self, batch_timeout):
+    def sweep(self, batch_timeout, last_data=None):
         """Close batches that have gone quiet.
 
         Without this an incomplete batch would sit open until four more
         manifests pushed it out, so on a quiet link its summary -- and the
         list of files that never arrived -- could be days late.
+
+        "Quiet" means no data arriving at all, not merely no file finished:
+        `last_data` is the wall-clock time bytes last landed in the staging
+        folder (None if nothing is being received).  The first version only
+        counted finished files, so a single transfer longer than
+        batch_timeout -- 10 GB at the ~350 Mbit/s the default FEC allows --
+        had its batch closed underneath it, and the intact file was then
+        discarded as having no manifest.  Data still arriving keeps every
+        open batch alive, since it can belong to any of them.
         """
         if not batch_timeout:
             return
         now = time.monotonic()
+        if last_data is not None and time.time() - last_data < batch_timeout:
+            for batch in self.batches.values():
+                batch.last_activity = now
+            return
         for batch in list(self.batches.values()):
             if now - batch.last_activity >= batch_timeout:
                 self._close(batch, "timeout")
@@ -792,6 +805,18 @@ def staging_dir(props):
     return out_dir + ".incoming"
 
 
+def last_data_time(path):
+    """When udp-receiver last wrote to `path` (wall clock), or None if it
+    has written nothing yet or the file is gone."""
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_mtime if st.st_size else None
+
+
 def run_folder_output(name, props, cfg):
     """Output agent: receive files forever into props['out'].
 
@@ -826,13 +851,15 @@ def run_folder_output(name, props, cfg):
     work = queue.Queue(maxsize=4)
 
     batch_timeout = float(props.get("batch_timeout", 300.0))
+    receiving = {"blob": None}      # the staging file udp-receiver is filling
 
     def verify_loop():
         while True:
             try:
                 blob = work.get(timeout=min(30.0, batch_timeout or 30.0))
             except queue.Empty:
-                receiver.sweep(batch_timeout)   # report what never arrived
+                # Report what never arrived -- unless data is still landing.
+                receiver.sweep(batch_timeout, last_data_time(receiving["blob"]))
                 continue
             try:
                 receiver.handle(blob)
@@ -851,7 +878,9 @@ def run_folder_output(name, props, cfg):
     while True:
         fd, blob = tempfile.mkstemp(dir=staging)
         os.close(fd)
+        receiving["blob"] = blob
         outcome = transport.receive(blob)
+        receiving["blob"] = None
         if outcome == "ok":
             work.put(blob)
             continue

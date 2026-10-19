@@ -3,6 +3,39 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [1.4.3] - 2026-10-19
+
+### Fixed
+
+- **A file taking longer than `batch_timeout` (default 5 minutes) to transfer
+  was discarded on arrival.** The receiving box closed the batch while the
+  file was still arriving, because only finished files reset the clock. The
+  intact file was then thrown away as "received a file with no manifest
+  pending". With the default FEC capping a gigabit link at about 350–400
+  Mbit/s, a 10 GB file takes about that long. Now any data still landing in
+  the staging folder keeps open batches alive, so a batch only times out after
+  `batch_timeout` with nothing received at all. Verified in the field: a 10 GB
+  transfer that failed this way arrived intact. (On earlier versions: set
+  `batch_timeout: 3600` in the receiving folder module.)
+
+### Changed
+
+- **The receive-side writeback ceiling scales with RAM.** `vm.dirty_bytes` in
+  `/etc/sysctl.d/90-dyode-receive.conf` is now 20% of RAM (like the kernel's
+  own default), at most 2 GB and at least 128 MB. In 1.4.2 it was a fixed
+  1 GB: too tight on large boxes and too much for a small one such as a
+  Raspberry Pi. Writeback still starts at 64 MB, or a quarter of the ceiling
+  on boxes under ~1.25 GB of RAM. Run `sudo ./install.sh --tuning-only` to
+  update an existing box.
+
+### Documentation
+
+- CAVEATS.md:
+  - new entry for the batch-timeout problem
+  - a section on sustained disk speed, which the writeback settings cannot
+    fix: how to measure it and how to set `bitrate` from it
+  - an explanation of what the writeback ceiling is for
+
 ## [1.4.2] - 2026-10-19
 
 ### Fixed

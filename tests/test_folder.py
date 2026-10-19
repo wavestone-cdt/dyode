@@ -185,6 +185,50 @@ class FolderTransferTests(unittest.TestCase):
             self.rx.sweep(batch_timeout=0.001)
         self.assertIn("a.txt never arrived", "\n".join(logs.output))
 
+    def queue_big_file(self):
+        """Send a one-file batch and deliver only its manifest, leaving the
+        file 'in flight' the way a long transfer is."""
+        make_file(self.inp, "big.bin", b"B" * 4096)
+        dyode.send_batch(dyode.scan_ready_files(self.inp, 2)[0], self.cast,
+                         self.work)
+        manifest = self.cast.queue.popleft()
+        blob = make_file(self.staging, "m", manifest)
+        self.assertEqual(self.rx.handle(blob), "manifest")
+        for batch in self.rx.batches.values():
+            batch.last_activity -= 301        # 5 minutes since the manifest
+
+    def test_transfer_longer_than_batch_timeout_is_not_discarded(self):
+        """Regression (field, 10 GB at ~350 Mbit/s): the batch timed out
+        while its only file was still arriving, and the intact file was then
+        thrown away as having no manifest."""
+        self.queue_big_file()
+        partial = make_file(self.staging, "partial", b"B" * 100, age=0)
+        with self.assertNoLogs("dyode.folder", "WARNING"):
+            self.rx.sweep(300, dyode.last_data_time(partial))
+        self.assertEqual(len(self.rx.batches), 1)
+        os.remove(partial)
+        results = self.cast.deliver_all(self.rx, self.staging)
+        self.assertEqual(results, ["stored"])
+        self.assertEqual(self.read_out("big.bin"), b"B" * 4096)
+
+    def test_batch_still_times_out_once_data_stops_arriving(self):
+        self.queue_big_file()
+        stale = make_file(self.staging, "stale", b"B" * 100, age=301)
+        with self.assertLogs("dyode.folder", "WARNING") as logs:
+            self.rx.sweep(300, dyode.last_data_time(stale))
+        self.assertIn("big.bin never arrived", "\n".join(logs.output))
+        self.assertEqual(self.rx.batches, {})
+
+    def test_nothing_being_received_means_plain_timeout(self):
+        self.queue_big_file()
+        empty = make_file(self.staging, "empty", b"", age=0)
+        self.assertIsNone(dyode.last_data_time(empty))      # listening only
+        self.assertIsNone(dyode.last_data_time(None))
+        self.assertIsNone(dyode.last_data_time(empty + ".gone"))
+        with self.assertLogs("dyode.folder", "WARNING"):
+            self.rx.sweep(300, dyode.last_data_time(empty))
+        self.assertEqual(self.rx.batches, {})
+
     def test_file_without_manifest_is_discarded(self):
         blob = make_file(self.staging, "x", b"stray")
         with self.assertLogs("dyode.folder", "WARNING"):

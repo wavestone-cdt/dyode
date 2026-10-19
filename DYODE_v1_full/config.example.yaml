@@ -65,8 +65,10 @@ modules:
     #                           files.  Keep it on the same filesystem as
     #                           'out' so the final move stays atomic.
     # optional: batch_timeout: 300
-    #                           seconds before an incomplete batch is closed
-    #                           and its missing files named in the log.
+    #                           seconds with nothing received before an
+    #                           incomplete batch is closed and its missing
+    #                           files named in the log.  A transfer still in
+    #                           progress keeps it open, however long it takes.
     # optional: fec: 8x8/128    forward error correction ratio (default 8x16/64)
     #                           or 'none' to switch it off.  The FEC encoder is
     #                           single-threaded and caps throughput well below

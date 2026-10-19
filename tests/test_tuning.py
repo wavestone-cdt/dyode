@@ -16,9 +16,11 @@ import unittest
 import _setup
 
 INSTALL = os.path.join(_setup.REPO, "install.sh")
+MIB = 1024 * 1024
+# On the field box (256 GB of RAM, LUKS): what fixed 1.3, 5 and 10 GB.
 SETTINGS = {
-    "vm.dirty_background_bytes": "67108864",
-    "vm.dirty_bytes": "1073741824",
+    "vm.dirty_background_bytes": str(64 * MIB),
+    "vm.dirty_bytes": str(2048 * MIB),
     "net.core.rmem_default": "8388608",
     "net.core.rmem_max": "16777216",
 }
@@ -35,6 +37,12 @@ class TuningTests(unittest.TestCase):
         os.makedirs(self.bin)
         self.log = os.path.join(self.tmp, "calls.log")
         self.fake("sysctl", 'echo "sysctl $*" >> "$LOG"; exit "${SYSCTL_RC:-0}"')
+        self.meminfo = os.path.join(self.tmp, "meminfo")
+        self.set_ram_mib(256 * 1024)
+
+    def set_ram_mib(self, mib):
+        with open(self.meminfo, "w") as fh:
+            fh.write("MemTotal:       %d kB\nMemFree: 1 kB\n" % (mib * 1024))
 
     def fake(self, name, body):
         path = os.path.join(self.bin, name)
@@ -44,7 +52,7 @@ class TuningTests(unittest.TestCase):
 
     def run_tuning(self, *args, env=None):
         e = dict(os.environ, DYODE_ETC=self.etc, LOG=self.log,
-                 PATH=self.bin + ":/usr/bin:/bin")
+                 DYODE_MEMINFO=self.meminfo, PATH=self.bin + ":/usr/bin:/bin")
         e.update(env or {})
         return subprocess.run(["bash", INSTALL, "--tuning-only", *args],
                               stdin=subprocess.DEVNULL, capture_output=True,
@@ -71,6 +79,31 @@ class TuningTests(unittest.TestCase):
         self.assertEqual(self.settings(), SETTINGS)
         self.assertIn("sysctl -q -p %s" % self.conf, self.calls())
         self.assertIn("wrote", res.stdout)
+
+    def test_ceiling_scales_with_ram_and_is_capped(self):
+        """20% of RAM like the kernel's own default, at most 2 GB, at least
+        128 MB; writeback starts at 64 MB or a quarter of the ceiling."""
+        for ram, dirty, background in ((256 * 1024, 2048 * MIB, 64 * MIB),
+                                       (16 * 1024, 2048 * MIB, 64 * MIB),
+                                       (4 * 1024, 4096 * MIB // 5, 64 * MIB),
+                                       (1024, 1024 * MIB // 5,
+                                        1024 * MIB // 20),
+                                       (256, 128 * MIB, 32 * MIB)):
+            self.set_ram_mib(ram)
+            res = self.run_tuning()
+            self.assertEqual(res.returncode, 0, res.stderr)
+            got = self.settings()
+            self.assertEqual(int(got["vm.dirty_bytes"]), dirty, ram)
+            self.assertEqual(int(got["vm.dirty_background_bytes"]),
+                             background, ram)
+            self.assertLess(background, dirty)
+
+    def test_unreadable_meminfo_falls_back_to_a_safe_middle(self):
+        os.remove(self.meminfo)
+        res = self.run_tuning()
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(int(self.settings()["vm.dirty_bytes"]),
+                         4096 * MIB // 5)
 
     def test_repeat_run_changes_nothing_and_keeps_no_backup(self):
         self.run_tuning()

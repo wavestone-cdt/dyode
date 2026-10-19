@@ -519,10 +519,12 @@ differ. Neither box can see the other's, and output-side logs cannot come
 back through the diode — collecting them needs an agent on the output
 network.
 
-**`batch_received` has no timeout.** If the last file of a batch is lost, the
-summary does not appear until the next manifest arrives. Alert on a
-`batch_sent` with no matching `batch_received` rather than waiting for one
-that may be late.
+**`batch_received` can be up to `batch_timeout` late.** If the last file of a
+batch is lost, the batch closes after `batch_timeout` seconds (default 300)
+with nothing arriving, and its `batch_received` carries `reason: timeout`
+and names the missing files. Since 1.4.3, data still arriving keeps the batch
+open, so a long single-file transfer is never closed underneath itself. To
+alert sooner, watch for a `batch_sent` with no matching `batch_received`.
 
 ### Rotation: logrotate, not Python
 

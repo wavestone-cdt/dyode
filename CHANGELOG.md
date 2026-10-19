@@ -3,6 +3,37 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [1.4.2] - 2026-10-19
+
+### Fixed
+
+- **Large folder transfers failing part-way** (from about 1 GB, at high
+  `bitrate`) on receiving boxes with plenty of RAM and an encrypted (LUKS)
+  disk. The cause was disk writeback, not the network. Linux wrote ~30 s of
+  received data at once, and that burst stalled `udp-receiver` long enough to
+  overflow its socket buffer, so udpcast aborted the file. `install.sh` now
+  writes `/etc/sysctl.d/90-dyode-receive.conf` on receiving boxes (v1, and v2
+  `--side out`), with continuous writeback (`vm.dirty_background_bytes`) and a
+  larger UDP receive buffer (`net.core.rmem_*`). Verified in the field: 1.3 GB
+  and 5 GB transfers at 900 Mbit/s that had always failed now arrive with
+  identical SHA-256. `--tuning-only` adds it to an existing box; `--no-tuning`
+  skips it.
+
+### Changed
+
+- A stalled transfer's error now says where the packets went, from the
+  kernel's UDP `RcvbufErrors` counter. "N UDP packets were dropped on this box
+  because a receive buffer was full" means the receiver stalled (the case
+  above). "No receive-buffer overflow on this box" means the packets were lost
+  before reaching it (NIC, cabling, diode).
+
+### Documentation
+
+- CAVEATS.md rewritten with the confirmed cause. The 1.4.1 entry blamed the
+  receive-side NIC; swapping it changed nothing. The entry now has the field
+  results, the diagnostic procedure that found the cause, the fix and how to
+  undo it, and other tuning for other hardware.
+
 ## [1.4.1] - 2026-10-16
 
 ### Documentation

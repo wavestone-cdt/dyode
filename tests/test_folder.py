@@ -335,6 +335,59 @@ class IdleReceiverTests(unittest.TestCase):
             self.assertEqual(self.cast.receive(self.blob), "error")
         self.assertIn("started and then stopped", "\n".join(logs.output))
 
+    SNMP = ("Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors "
+            "SndbufErrors InCsumErrors IgnoredMulti MemErrors\n"
+            "Udp: 900 0 %d 10 %d 0 0 0 0\n")
+
+    def stall_with_drops(self, before, after):
+        """A stalled receive, with the kernel's RcvbufErrors counter at
+        `before` when udp-receiver starts and `after` when it exits."""
+        snmp = os.path.join(self.dir, "snmp")
+        with open(snmp, "w") as fh:
+            fh.write(self.SNMP % (before, before))
+        self.cast.snmp_path = snmp
+        with open(self.blob, "wb") as fh:
+            fh.write(b"partial")
+
+        def runner(cmd, quiet=False):
+            with open(snmp, "w") as fh:
+                fh.write(self.SNMP % (after, after))
+            return False, "Missed blocks: 400,401", 39.0
+        self.cast._run = runner
+        with self.assertLogs("dyode.folder", "ERROR") as logs:
+            self.assertEqual(self.cast.receive(self.blob), "error")
+        return "\n".join(logs.output)
+
+    def test_stall_with_buffer_overflow_says_so_and_points_at_the_fix(self):
+        """Field case (CAVEATS.md): writeback bursts on an encrypted disk
+        stalled the receiver and overflowed its socket buffer."""
+        msg = self.stall_with_drops(1000, 4321)
+        self.assertIn("3321 UDP packets were dropped on this box", msg)
+        self.assertIn("--tuning-only", msg)
+        self.assertIn("Missed blocks", msg)        # udpcast's own text kept
+
+    def test_stall_without_overflow_points_away_from_this_box(self):
+        msg = self.stall_with_drops(1000, 1000)
+        self.assertIn("lost before reaching it", msg)
+        self.assertNotIn("--tuning-only", msg)
+
+    def test_stall_hint_is_skipped_when_the_counter_is_unreadable(self):
+        self.cast.snmp_path = os.path.join(self.dir, "missing")
+        self.fake_run(False, "x", elapsed=39.0, blob_bytes=b"partial")
+        with self.assertLogs("dyode.folder", "ERROR") as logs:
+            self.cast.receive(self.blob)
+        msg = "\n".join(logs.output)
+        self.assertIn("started and then stopped", msg)
+        self.assertNotIn("dropped", msg)
+        self.assertNotIn("lost before", msg)
+
+    def test_reads_rcvbuf_errors_by_column_name(self):
+        path = os.path.join(self.dir, "snmp")
+        with open(path, "w") as fh:
+            fh.write("Ip: Forwarding\nIp: 1\n" + self.SNMP % (7, 42))
+        self.assertEqual(dyode.udp_rcvbuf_errors(path), 42)
+        self.assertIsNone(dyode.udp_rcvbuf_errors(path + ".nope"))
+
     def test_no_start_timeout_means_any_exit_is_an_error(self):
         cast = self.make_cast(start_timeout=0)
         self.fake_run(False, self.REAL_IDLE_STDERR, elapsed=86400.0,

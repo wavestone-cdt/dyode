@@ -32,6 +32,10 @@
 #                             unattended installs (keep it mode 600)
 #   --no-shares               do not ask about file shares
 #   --shares-only             only set up the shares; install nothing
+#   --no-tuning               do not install the receive-side kernel settings
+#                             (/etc/sysctl.d/90-dyode-receive.conf; see
+#                             CAVEATS.md).  Never installed with --side in.
+#   --tuning-only             only install those settings; install nothing
 #   --skip-os-packages        do not install udpcast / python venv support
 #   --no-wizard               do not start the setup wizard afterwards
 #   -y, --yes                 do not ask for confirmation
@@ -50,7 +54,7 @@ OS_RELEASE="${DYODE_OS_RELEASE:-/etc/os-release}"
 
 MODE="" VARIANT="" SIDE="" PYTHON="" WITH="" WITH_GIVEN=0
 ASSUME_YES=0 RUN_WIZARD=1 SKIP_OS=0 DRY_RUN=0
-SHARES_ONLY=0 NO_SHARES=0 SHARE_NFS_SPECS=() SHARE_SMB_SPECS=() SMB_PW_FILE=""
+SHARES_ONLY=0 NO_SHARES=0 NO_TUNING=0 TUNING_ONLY=0 SHARE_NFS_SPECS=() SHARE_SMB_SPECS=() SMB_PW_FILE=""
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -63,6 +67,8 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 interactive() { [ -t 0 ] && [ -t 1 ]; }
 # shellcheck source=lib/install-shares.sh
 . "$ROOT/lib/install-shares.sh"
+# shellcheck source=lib/install-tuning.sh
+. "$ROOT/lib/install-tuning.sh"
 
 # ---------------------------------------------------------------- arguments
 while [ $# -gt 0 ]; do
@@ -87,6 +93,8 @@ while [ $# -gt 0 ]; do
     --smb-password-file=*) SMB_PW_FILE="${1#*=}" ;;
     --no-shares) NO_SHARES=1 ;;
     --shares-only) SHARES_ONLY=1 ;;
+    --no-tuning) NO_TUNING=1 ;;
+    --tuning-only) TUNING_ONLY=1 ;;
     --skip-os-packages) SKIP_OS=1 ;;
     --no-wizard) RUN_WIZARD=0 ;;
     -y|--yes)  ASSUME_YES=1 ;;
@@ -154,6 +162,16 @@ if [ "${#NFS_SHARES[@]}" -gt 0 ] && ! command -v exportfs >/dev/null 2>&1; then
 fi
 if [ "${#SMB_SHARES[@]}" -gt 0 ] && ! command -v testparm >/dev/null 2>&1; then
   case " $WITH " in *" smb "*) ;; *) die "--share-smb needs Samba: add --with smb" ;; esac
+fi
+
+# --tuning-only: install the receive-side kernel settings and stop.
+if [ "$TUNING_ONLY" -eq 1 ]; then
+  [ "$NO_TUNING" -eq 0 ] || die "--tuning-only and --no-tuning contradict each other"
+  [ "$SIDE" != in ] || die "--tuning-only is for receiving boxes; this one was given --side in"
+  [ "$(id -u)" -eq 0 ] || [ "$DRY_RUN" -eq 1 ] || [ -n "${DYODE_ETC:-}" ] ||
+    die "installing kernel settings needs root: run with sudo"
+  apply_tuning
+  exit 0
 fi
 
 # --shares-only: set up file shares on an installed box and stop.
@@ -326,6 +344,7 @@ say "  Python:       $PY ($(py_ver "$PY"))"
 say "  virtualenv:   ${VENV#"$ROOT"/}"
 say "  packages:     ${REQ#"$ROOT"/}  (from $([ "$MODE" = offline ] && echo "${WHEELS#"$ROOT"/}" || echo PyPI))"
 [ "$RUN_WIZARD" -eq 1 ] && say "  then:         the setup wizard"
+describe_tuning
 describe_shares
 
 if [ "$ASSUME_YES" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -466,6 +485,8 @@ PYEOF
     warn "udp-sender is not installed; folder transfers will not work until udpcast is"
   fi
 fi
+
+apply_tuning
 
 say ""
 say "Installed: DYODE $VARIANT${SIDE:+ ($SIDE side)}, $MODE, in ${TARGET#"$ROOT"/}"

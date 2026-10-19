@@ -88,6 +88,16 @@ class InstallScriptTests(unittest.TestCase):
         for spec in STAND_INS:
             make_wheel(self.wheels, *spec)
         self.write_sums()
+        # A real install on a receiving box writes kernel settings.  Keep
+        # them in a scratch /etc, with a stand-in sysctl, so running the
+        # tests as root never changes the machine running them.
+        self.etc = os.path.join(self.tmp, "etc")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        sysctl = os.path.join(self.bin, "sysctl")
+        with open(sysctl, "w") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(sysctl, 0o755)
 
     def write_sums(self):
         subprocess.run("sha256sum -- *.whl > SHA256SUMS", shell=True,
@@ -97,7 +107,9 @@ class InstallScriptTests(unittest.TestCase):
         return subprocess.run(
             ["bash", os.path.join(self.repo, "install.sh"), *args],
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=180, cwd=self.repo)
+            timeout=180, cwd=self.repo,
+            env=dict(os.environ, DYODE_ETC=self.etc,
+                     PATH=self.bin + ":" + os.environ.get("PATH", "")))
 
     def offline_v2_out(self, *extra):
         return self.install("--offline", "--variant", "v2", "--side", "out",
@@ -180,6 +192,27 @@ class InstallScriptTests(unittest.TestCase):
                       res.stdout)
         self.assertFalse(os.path.exists(
             os.path.join(self.repo, "DYODE_v1_full", "venv")))
+
+    def test_plan_names_the_receive_side_tuning(self):
+        out = self.services_dry_run("none")
+        self.assertIn("90-dyode-receive.conf", out.stdout)
+        self.assertIn("vm.dirty_background_bytes = 67108864", out.stdout)
+        sender = self.install("--online", "--variant", "v2", "--side", "in",
+                              "--python", sys.executable, "--dry-run",
+                              "--no-wizard")
+        self.assertEqual(sender.returncode, 0, sender.stderr)
+        self.assertNotIn("90-dyode-receive.conf", sender.stdout)
+        skipped = self.install("--online", "--variant", "v2", "--side", "out",
+                               "--python", sys.executable, "--dry-run",
+                               "--no-wizard", "--no-tuning")
+        self.assertNotIn("90-dyode-receive.conf", skipped.stdout)
+
+    def test_receiving_install_writes_the_tuning_file(self):
+        res = self.offline_v2_out()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        path = os.path.join(self.etc, "sysctl.d", "90-dyode-receive.conf")
+        with open(path) as fh:
+            self.assertIn("vm.dirty_bytes = 1073741824", fh.read())
 
     def services_dry_run(self, value):
         return self.install("--online", "--variant", "v2", "--side", "out",

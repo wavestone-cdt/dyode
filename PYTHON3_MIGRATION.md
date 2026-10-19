@@ -560,6 +560,25 @@ Files are created `0640 root adm`, so a monitoring agent needs to be in the
 the daemon logs a warning and carries on with stderr only rather than
 refusing to start.
 
+### Receive-side kernel settings
+
+On a box that receives through the diode (v1, or v2 `--side out`),
+`install.sh` writes `/etc/sysctl.d/90-dyode-receive.conf` and loads it.
+The file makes the kernel write received data to disk continuously
+(`vm.dirty_background_bytes` 64 MB, `vm.dirty_bytes` 1 GB) instead of in one
+burst every 30 s. It also raises the UDP receive buffer
+(`net.core.rmem_default` 8 MB). Without it, files over about 1 GB failed
+part-way on a fast link to an encrypted receive disk. The background, and
+how to diagnose similar failures, are in [CAVEATS.md](CAVEATS.md).
+
+```bash
+sudo ./install.sh --tuning-only     # add it to a box installed before 1.4.2
+sudo ./install.sh ... --no-tuning   # install without it
+```
+
+It is never installed with `--side in`. The file is managed: a repeat run
+changes nothing, and a hand-edited copy is backed up before it is replaced.
+
 ## Throughput tuning (folder transfers)
 
 The original code shipped `MAX_BITRATE_MBPS = 8` with the comment *"empirical,

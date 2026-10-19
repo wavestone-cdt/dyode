@@ -97,6 +97,21 @@ class ChangeWatcher:
 # udpcast transport
 # --------------------------------------------------------------------------
 
+SNMP_PATH = "/proc/net/snmp"
+
+
+def udp_rcvbuf_errors(path=SNMP_PATH):
+    """Box-wide count of UDP packets dropped because a socket's receive
+    buffer was full (the kernel's Udp RcvbufErrors), or None if unknown."""
+    try:
+        with open(path) as fh:
+            rows = [line.split() for line in fh if line.startswith("Udp:")]
+        header, values = rows[0], rows[1]
+        return int(values[header.index("RcvbufErrors")])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 class UdpCast:
     """Thin wrapper around the udp-sender / udp-receiver programs.
 
@@ -125,6 +140,7 @@ class UdpCast:
         self.start_timeout = int(props.get("start_timeout", 300))
         self.in_ip, self.out_ip = net["in_ip"], net["out_ip"]
         self.in_if, self.out_if = net["in_interface"], net["out_interface"]
+        self.snmp_path = SNMP_PATH          # override: tests
 
     def sender_cmd(self, path):
         # --nokbd because this runs as a systemd service: udp-sender(1)
@@ -183,6 +199,7 @@ class UdpCast:
         must not back off on 'idle': every second spent not listening is a
         second in which the sender can transmit a file nobody receives.
         """
+        drops_before = udp_rcvbuf_errors(self.snmp_path)
         ok, text, elapsed = self._run(self.receiver_cmd(path), quiet=True)
         if ok:
             return "ok"
@@ -197,9 +214,33 @@ class UdpCast:
                 log.debug("no sender within %ds; listening again",
                           self.start_timeout)
             return "idle"
+        reason = self.FAILURE_REASONS[outcome]
+        if outcome == "stalled":
+            reason += self._stall_hint(drops_before)
         log.error("udp-receiver failed after %.1fs (%s): %s", elapsed,
-                  self.FAILURE_REASONS[outcome], text[-500:] or "(no output)")
+                  reason, text[-500:] or "(no output)")
         return "error"
+
+    def _stall_hint(self, drops_before):
+        """Say where the packets were lost, from the kernel's own counter.
+
+        Field experience (CAVEATS.md): a stalled transfer was the receiver
+        pausing -- disk writeback on an encrypted disk -- while the socket
+        buffer overflowed.  The counter tells that apart from loss before
+        the box (NIC, cabling, diode), which needs a different fix.
+        """
+        drops_after = udp_rcvbuf_errors(self.snmp_path)
+        if drops_before is None or drops_after is None:
+            return ""
+        dropped = drops_after - drops_before
+        if dropped > 0:
+            return ("; %d UDP packets were dropped on this box because a "
+                    "receive buffer was full, so the receiver stalled -- "
+                    "see CAVEATS.md, or run: sudo ./install.sh --tuning-only"
+                    % dropped)
+        return ("; no receive-buffer overflow on this box, so packets were "
+                "lost before reaching it (NIC, cabling or diode) -- see "
+                "CAVEATS.md")
 
     _idle_seen = False
     FAILURE_REASONS = {

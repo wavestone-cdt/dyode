@@ -27,7 +27,7 @@ bash ./install.sh
 It detects your network interfaces, writes the MAC addresses into `config.yaml`
 for you, and can generate a systemd service, plus logging units for detailed diode activity log management.
 
-For detailed information, including steps to make your own, take a look at the [wiki](https://github.com/wavestone-cdt/dyode/wiki).
+For detailed information, including steps to make your own, take a look at the [wiki](https://github.com/nc-intezra/dyode_python3/wiki).
 You may also take a look at the [public talks](https://github.com/wavestone-cdt/dyode/tree/master/Talks) done on this project.
 
 ## Hardware

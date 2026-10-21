@@ -58,7 +58,7 @@ jobs:
       - name: Test
         if: steps.version.outputs.skip != 'true'
         run: |
-          python -m pip install --quiet pyyaml
+          python -m pip install --quiet pyyaml "pymodbus>=3.12,<3.13"   # real-server Modbus test
           python -m unittest discover -s tests
 
       - name: Verify the offline bundle

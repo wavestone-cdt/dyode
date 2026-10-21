@@ -63,6 +63,7 @@ def run_screen_input(name, props, cfg):
     min_gap = 1.0 / float(props.get("max_fps", 10))
     addr = (cfg["network"]["out_ip"], props["port"])
     watcher = dyode.ChangeWatcher(folder, recursive=False)
+    auth = common.require_auth(cfg)
     last_sent = None
     log.info("module %r: watching %s for screenshots, sending to %s:%s",
              name, folder, *addr)
@@ -82,7 +83,7 @@ def run_screen_input(name, props, cfg):
             if not data.startswith(JPEG_MAGIC):
                 log.debug("%s is not a complete JPEG yet; skipped", path)
                 continue
-            common.udp_send(sock, addr, data)
+            common.udp_send(sock, addr, data, auth=auth)
             last_sent = (mtime, size)
             time.sleep(min_gap)
 
@@ -114,11 +115,11 @@ class FrameStore:
             return self.frame_id, self.frame
 
 
-def receive_frames(sock, store, stop=None):
+def receive_frames(sock, store, stop=None, auth=None):
     """Thread: read datagrams forever and publish complete JPEG frames.
     The socket stays bound the whole time, so no frame is lost between
     viewers (the original re-bound it for every frame)."""
-    reasm = common.Reassembler()
+    reasm = common.Reassembler(max_pieces=4096, max_bytes=64 * 1024 * 1024)
     while stop is None or not stop.is_set():
         try:
             data = sock.recv(common.UDP_MAX_DATAGRAM + 64)
@@ -129,6 +130,8 @@ def receive_frames(sock, store, stop=None):
                 return
             raise
         payload = reasm.feed(data)
+        if payload is not None and auth is not None:
+            payload = auth.unseal(payload, "screen")
         if payload is None:
             continue
         if payload.startswith(JPEG_MAGIC):
@@ -137,7 +140,9 @@ def receive_frames(sock, store, stop=None):
             log.warning("received a frame that is not a JPEG; ignored")
 
 
-def make_handler(store):
+def make_handler(store, max_streams=8):
+    streams = threading.BoundedSemaphore(max_streams)
+
     class ScreenHandler(BaseHTTPRequestHandler):
         server_version = "DYODE"
 
@@ -168,6 +173,20 @@ def make_handler(store):
             self.wfile.write(body)
 
         def _stream(self):
+            # Each viewer holds a thread for as long as it watches: without a
+            # cap, anyone who can reach the port could open them until the
+            # box ran out of threads.
+            if not streams.acquire(blocking=False):
+                log.warning("viewer %s refused: %d streams already open (max_streams)",
+                            self.client_address[0], max_streams)
+                self._send(503, "text/plain", b"too many viewers\n")
+                return
+            try:
+                self._stream_frames()
+            finally:
+                streams.release()
+
+        def _stream_frames(self):
             self.send_response(200)
             self.send_header("Content-Type",
                              "multipart/x-mixed-replace; boundary=%s" % BOUNDARY)
@@ -191,17 +210,55 @@ def make_handler(store):
     return ScreenHandler
 
 
-def start_screen_output(props, cfg, udp_bind=None):
+def interface_addresses():
+    """{interface: IPv4 address} for every interface that has one (Linux)."""
+    import fcntl
+    import struct
+    found = {}
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _, name in socket.if_nameindex():
+            try:
+                packed = fcntl.ioctl(probe.fileno(), 0x8915,       # SIOCGIFADDR
+                                     struct.pack("256s", name[:15].encode()))
+            except OSError:
+                continue
+            found[name] = socket.inet_ntoa(packed[20:24])
+    finally:
+        probe.close()
+    return found
+
+
+def default_http_bind(cfg, addresses=None):
+    """Where the viewer page listens when http_bind is not set: the first
+    address that is neither loopback nor on the diode NIC, i.e. the IT-side
+    network the viewers are on.  0.0.0.0 (with a warning) if none is found."""
+    net = cfg.get("network", {})
+    try:
+        addresses = interface_addresses() if addresses is None else addresses
+    except (OSError, ImportError, AttributeError):
+        addresses = {}
+    for name in sorted(addresses):
+        ip = addresses[name]
+        if name == net.get("out_interface") or ip == net.get("out_ip") \
+                or ip.startswith("127."):
+            continue
+        return ip
+    log.warning("screen: no non-diode address found; the viewer page listens on "
+                "every address (set http_bind to choose one)")
+    return "0.0.0.0"
+
+
+def start_screen_output(props, cfg, udp_bind=None, auth=None):
     """Bind the UDP receiver and HTTP server. Returns (httpd, store, sock)."""
     store = FrameStore()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-    sock.bind(udp_bind or (cfg["network"]["out_ip"], props["port"]))
+    sock = common.diode_socket(cfg, props["port"], rcvbuf=4 * 1024 * 1024, bind=udp_bind)
     sock.settimeout(1.0)
-    threading.Thread(target=receive_frames, args=(sock, store),
+    threading.Thread(target=receive_frames, args=(sock, store, None, auth),
                      name="screen-rx", daemon=True).start()
-    http_addr = (str(props.get("http_bind", "0.0.0.0")), int(props.get("http_port", 8080)))
-    httpd = ThreadingHTTPServer(http_addr, make_handler(store))
+    bind = props.get("http_bind") or default_http_bind(cfg)
+    http_addr = (bind, int(props.get("http_port", 8080)))
+    httpd = ThreadingHTTPServer(http_addr, make_handler(store, props.get("max_streams", 8)))
     httpd.daemon_threads = True
     return httpd, store, sock
 
@@ -209,7 +266,7 @@ def start_screen_output(props, cfg, udp_bind=None):
 def run_screen_output(name, props, cfg):
     """Output agent: serve received frames over HTTP. Runs forever."""
     common.setup_logging(cfg.get("_log_level", "INFO"), cfg)
-    httpd, _, _ = start_screen_output(props, cfg)
+    httpd, _, _ = start_screen_output(props, cfg, auth=common.require_auth(cfg))
     log.info("module %r: screen available at http://%s:%d/",
              name, *httpd.server_address[:2])
     httpd.serve_forever()

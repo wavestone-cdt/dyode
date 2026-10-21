@@ -82,6 +82,17 @@ def valid_abs_path_list(text):
     return all(valid_abs_path(p) for p in split_list(text))
 
 
+def valid_network_list(text):
+    """Empty, or comma-separated IPv4/IPv6 addresses or networks."""
+    import ipaddress
+    try:
+        for item in split_list(text):
+            ipaddress.ip_network(item, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
 def valid_forward_list(text):
     """Comma-separated udp://host:port / tcp://host:port, or empty."""
     for item in split_list(text):
@@ -216,6 +227,8 @@ class ConfigModel:
         self.serial_device = common.DEFAULT_SERIAL["device"]
         self.serial_baud = common.DEFAULT_SERIAL["baudrate"]
         self.modules = []
+        self.auth = {}                         # config.yaml 'auth' section, kept as is
+        self.imported_from = None              # path of an imported config.yaml
 
     # -- side helpers ------------------------------------------------------
 
@@ -270,6 +283,8 @@ class ConfigModel:
         model.out_mac = str(d_out.get("mac", "") or "")
         model.in_if = str(d_in.get("interface", model.in_if))
         model.out_if = str(d_out.get("interface", model.out_if))
+        if isinstance(raw.get("auth"), dict):
+            model.auth = dict(raw["auth"])
         serial_cfg = raw.get("serial") or {}
         model.serial_device = str(serial_cfg.get("device", model.serial_device))
         model.serial_baud = int(serial_cfg.get("baudrate", model.serial_baud))
@@ -300,6 +315,11 @@ class ConfigModel:
                   "  mac: %s" % (self.out_mac or "''"),
                   "  interface: %s      # NIC facing the diode on the output box" % self.out_if,
                   ""]
+            if self.auth:
+                L.append("auth:")
+                for key in sorted(self.auth):
+                    L.append("  %s: %s" % (key, _scalar(self.auth[key])))
+                L.append("")
         else:
             L += ["serial:",
                   "  device: %s" % self.serial_device,
@@ -314,7 +334,8 @@ class ConfigModel:
             for key in ("port", "ip", "port_out", "plc_port", "unit", "interval",
                         "in", "out", "http_port", "max_fps", "settle", "bitrate",
                         "listen_udp", "listen_tcp", "copies", "max_kbps",
-                        "format", "split_by_source"):
+                        "format", "split_by_source", "unmapped",
+                        "http_bind", "max_streams"):
                 if key in mod.props:
                     L.append("    %s: %s" % (key, _scalar(mod.props[key])))
             for key in ("tail", "forward", "allow_from"):
@@ -358,6 +379,12 @@ class ConfigModel:
                        % ("output" if side == "in" else "input"))
         if not self.modules:
             out.append("No modules are defined, so DYODE will not transfer anything.")
+        for mod in self.modules:
+            if mod.type == "logs" and (mod.props.get("listen_udp") or mod.props.get("listen_tcp")) \
+                    and not mod.props.get("allow_from"):
+                out.append("Logs module %r accepts syslog from any sender. Set "
+                           "allow_from to the OT devices' networks, or anything that "
+                           "can reach the input box can write into the logs." % mod.name)
         if self.variant == "v1" and self.in_if == self.out_if:
             out.append("Both sides use the interface %r. That is only correct if "
                        "the two boxes happen to name their NICs the same way."
@@ -522,11 +549,38 @@ class Plan:
         self.unit_path = None
         self.created = []
         self.backups = []
+        self.key_path, self.key_action, self.key_source = self._plan_key()
+
+    def _plan_key(self):
+        """What to do about the message authentication key (v1 only):
+        'keep' an existing one, 'copy' it from beside an imported
+        config.yaml, 'create' one on the first box, or report it 'missing'
+        (imported without a key: it must come from the other box)."""
+        if self.model.variant != "v1":
+            return None, None, None
+        name = str(self.model.auth.get("key_file", common.DEFAULT_AUTH["key_file"]))
+        path = name if os.path.isabs(name) else os.path.join(self.workdir, name)
+        if os.path.exists(path):
+            return path, "keep", None
+        if self.model.imported_from:
+            source = os.path.join(os.path.dirname(self.model.imported_from),
+                                  os.path.basename(path))
+            if os.path.isfile(source):
+                return path, "copy", source
+            return path, "missing", None
+        return path, "create", None
 
     def describe(self):
         lines = ["Write %s" % self.config_path]
         if self.write_unit:
             lines.append("Write %s" % self.unit_path)
+        if self.key_action == "create":
+            lines.append("Create a new message authentication key %s" % self.key_path)
+        elif self.key_action == "copy":
+            lines.append("Copy the key %s to %s" % (self.key_source, self.key_path))
+        elif self.key_action == "missing":
+            lines.append("No key yet: copy dyode.key from the other box to %s"
+                         % self.key_path)
         return lines
 
     def apply(self):
@@ -534,6 +588,12 @@ class Plan:
         self.created.append(self.config_path)
         if backup:
             self.backups.append(backup)
+        if self.key_action == "create":
+            common.generate_key_file(self.key_path)
+            self.created.append(self.key_path)
+        elif self.key_action == "copy":
+            install_key_copy(self.key_source, self.key_path)
+            self.created.append(self.key_path)
         if self.write_unit:
             iface = (self.model.in_if if self.side == "in"
                      else self.model.out_if)
@@ -544,6 +604,17 @@ class Plan:
             if backup:
                 self.backups.append(backup)
         return self.created
+
+
+def install_key_copy(source, dest):
+    """Copy a key file, checking it first, readable by root only."""
+    common.read_key_file(source)                 # raises if it is not a key
+    with open(source, encoding="ascii") as fh:
+        text = fh.read()
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    return dest
 
 
 def venv_ready(workdir):
@@ -584,6 +655,16 @@ def next_steps(plan):
         steps.append("Copy %s to the other box and run this installer there, then\n"
                      "bring the updated file back so both boxes match."
                      % _shell_quote(plan.config_path))
+    if plan.key_action == "create":
+        steps.append("Copy the new key %s to the other box, into the same\n"
+                     "folder as its config.yaml (beside it, so importing the config\n"
+                     "there picks it up). Both boxes need the SAME key: treat it like\n"
+                     "a password, keep it off file shares and out of e-mail."
+                     % _shell_quote(plan.key_path))
+    elif plan.key_action == "missing":
+        steps.append("Copy dyode.key from the other box to %s\n"
+                     "(chmod 600). DYODE will not start without it."
+                     % _shell_quote(plan.key_path))
     if plan.write_unit:
         steps.append("Enable the service:\n"
                      "    sudo cp %s /etc/systemd/system/%s\n"

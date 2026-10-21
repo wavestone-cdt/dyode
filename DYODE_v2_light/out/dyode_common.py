@@ -10,11 +10,16 @@ Contents:
   * logging setup
   * a process supervisor that restarts crashed modules
   * UDP datagram framing (chunking, reassembly, CRC check)
+  * message authentication (HMAC-SHA256, shared key file)
   * serial line framing (newline-delimited, CRC check)
 """
 
 import argparse
+import collections
 import datetime
+import hashlib
+import ipaddress
+import hmac
 import json
 import logging
 import logging.handlers
@@ -22,6 +27,7 @@ import multiprocessing
 import os
 import re
 import secrets
+import socket
 import struct
 import sys
 import time
@@ -72,6 +78,16 @@ DEFAULT_LOGGING = {
 }
 EVENT_SCHEMA_VERSION = 1
 LOG_DIR_MODE = 0o750
+
+# Message authentication.  Both boxes hold the same random key; every
+# Modbus, log and screen message and every folder manifest is signed with
+# it, so nothing that merely reaches the output box's diode ports -- from
+# the IT network, say -- can pass for data from the input box.
+DEFAULT_AUTH = {
+    "key_file": "dyode.key",   # relative to the folder holding config.yaml
+    "required": True,
+}
+AUTH_KEY_BYTES = 32
 
 
 class ConfigError(ValueError):
@@ -273,7 +289,82 @@ def load_config(path):
     cfg["serial"] = serial_cfg
 
     cfg["logging"] = _normalize_logging(raw.get("logging"))
+    cfg["auth"] = _normalize_auth(raw.get("auth"), os.path.dirname(os.path.abspath(path)))
     return cfg
+
+
+def _normalize_auth(raw, base_dir):
+    """Validate the optional 'auth' section; the key file path becomes
+    absolute (relative paths are taken from the config file's folder)."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError("'auth' must be a mapping")
+    unknown = set(raw) - set(DEFAULT_AUTH)
+    if unknown:
+        raise ConfigError("'auth': unknown key(s) %s" % ", ".join(sorted(unknown)))
+    auth = dict(DEFAULT_AUTH)
+    auth.update(raw)
+    if not isinstance(auth["required"], bool):
+        raise ConfigError("'auth.required' must be true or false")
+    key_file = str(auth["key_file"])
+    if not os.path.isabs(key_file):
+        key_file = os.path.join(base_dir, key_file)
+    auth["key_file"] = key_file
+    return auth
+
+
+def generate_key_file(path):
+    """Write a new random key (hex) to path, mode 0600.  Refuses to
+    overwrite: replacing the key on one box only breaks the link."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(secrets.token_hex(AUTH_KEY_BYTES) + "\n")
+    return path
+
+
+def read_key_file(path):
+    """Return the key bytes from a hex key file, or raise ConfigError."""
+    try:
+        with open(path) as fh:
+            text = fh.read().strip()
+    except OSError as err:
+        raise ConfigError("cannot read authentication key %s: %s" % (path, err.strerror))
+    try:
+        key = bytes.fromhex(text)
+    except ValueError:
+        raise ConfigError("authentication key %s is not hex" % path)
+    if len(key) < 16:
+        raise ConfigError("authentication key %s is too short (need at least 16 bytes)" % path)
+    return key
+
+
+def message_auth(cfg):
+    """MessageAuth for this config, or None when authentication is off.
+    A missing key with auth.required (the default) is a configuration
+    error: running unsigned would silently undo the protection."""
+    auth = cfg.get("auth")
+    if auth is None:            # a config dict not built by load_config (tests)
+        return None
+    if not os.path.exists(auth["key_file"]):
+        if auth.get("required", True):
+            raise ConfigError(
+                "no message authentication key at %s. Create one on ONE box with "
+                "'python3 dyode_setup.py --new-key' (in the DYODE "
+                "folder) and copy it to the other box beside config.yaml (or set auth.required: false to run "
+                "unauthenticated)" % auth["key_file"])
+        log.warning("auth.required is false and %s is missing: messages are NOT "
+                    "authenticated", auth["key_file"])
+        return None
+    return MessageAuth(read_key_file(auth["key_file"]))
+
+
+def require_auth(cfg):
+    """message_auth(), exiting with the error instead of raising it."""
+    try:
+        return message_auth(cfg)
+    except ConfigError as err:
+        die("configuration error: %s" % err)
 
 
 def _normalize_logging(raw):
@@ -380,6 +471,16 @@ def _normalize_module(name, props):
                         "folder, or anything serving that folder will see "
                         "partial files" % name)
                 props["staging"] = staging
+        if mtype == "screen":
+            # Viewers at once; each holds a thread and a connection open.
+            props["max_streams"] = _positive_number(
+                name, "max_streams", props.get("max_streams", 8), integer=True)
+            if props.get("http_bind") not in (None, ""):
+                try:
+                    props["http_bind"] = str(ipaddress.IPv4Address(str(props["http_bind"])))
+                except ValueError:
+                    raise ConfigError("module %r: 'http_bind' must be an IPv4 address, "
+                                      "got %r" % (name, props["http_bind"]))
     elif mtype == "modbus":
         if "ip" not in props:
             raise ConfigError("module %r: PLC 'ip' is required" % name)
@@ -390,6 +491,12 @@ def _normalize_module(name, props):
         props["coils"] = [parse_range(c) for c in (props.get("coils") or [])]
         if not props["registers"] and not props["coils"]:
             raise ConfigError("module %r: no registers or coils configured" % name)
+        # How the output box's Modbus server answers for an address that is
+        # not in any configured range: Modbus exception 02 (Illegal Data
+        # Address), or 0 as before 1.5.0.
+        props["unmapped"] = str(props.get("unmapped", "exception")).lower()
+        if props["unmapped"] not in ("exception", "zero"):
+            raise ConfigError("module %r: 'unmapped' must be exception or zero" % name)
     elif mtype == "logs":
         # Validation lives with the module.  DYODE v2 has no logstream.py
         # (it ignores 'logs' modules with a warning), so a missing module
@@ -523,9 +630,12 @@ def udp_chunks(payload, msg_id=None, chunk_size=UDP_CHUNK):
             for i, piece in enumerate(pieces)]
 
 
-def udp_send(sock, addr, payload, pace=0.0002):
+def udp_send(sock, addr, payload, pace=0.0002, auth=None):
     """Send one message as framed datagrams, pacing to avoid overrunning
-    the receiver (there is no flow control on a diode)."""
+    the receiver (there is no flow control on a diode).  With `auth`, the
+    message is sealed (signed) first."""
+    if auth is not None:
+        payload = auth.seal(payload)
     for datagram in udp_chunks(payload):
         sock.sendto(datagram, addr)
         if pace:
@@ -533,38 +643,69 @@ def udp_send(sock, addr, payload, pace=0.0002):
 
 
 class Reassembler:
-    """Rebuild messages from framed datagrams. Pure logic, no sockets."""
+    """Rebuild messages from framed datagrams. Pure logic, no sockets.
 
-    def __init__(self, max_pending=8):
+    Bounded: a piece larger than DYODE ever sends, a message announcing more
+    pieces than this listener's largest real message, more than `max_bytes`
+    held in total, or a partial message older than `max_age` seconds is
+    dropped.  Without these, anything able to send to the port could make it
+    hold gigabytes of never-completed messages.
+    """
+
+    def __init__(self, max_pending=8, max_pieces=1024, max_bytes=32 * 1024 * 1024,
+                 max_age=10.0, clock=time.monotonic):
         self.max_pending = max_pending
+        self.max_pieces = max_pieces
+        self.max_bytes = max_bytes
+        self.max_age = max_age
+        self.clock = clock
         self.pending = {}   # msg_id -> [total, crc, {index: piece}, first_seen]
+        self.held = 0
         self.dropped = 0
+
+    def _forget(self, msg_id):
+        entry = self.pending.pop(msg_id)
+        self.held -= sum(len(p) for p in entry[2].values())
+
+    def _expire(self):
+        cutoff = self.clock() - self.max_age
+        for msg_id in [k for k, e in self.pending.items() if e[3] < cutoff]:
+            self._forget(msg_id)
+            self.dropped += 1
 
     def feed(self, datagram):
         """Feed one datagram. Returns the complete payload, or None."""
-        if len(datagram) < UDP_HEADER.size:
+        if len(datagram) < UDP_HEADER.size or len(datagram) > UDP_MAX_DATAGRAM:
             return None
         magic, msg_id, index, total, crc = UDP_HEADER.unpack_from(datagram)
-        if magic != UDP_MAGIC or total == 0 or index >= total:
+        if magic != UDP_MAGIC or total == 0 or index >= total or total > self.max_pieces:
             return None
         piece = datagram[UDP_HEADER.size:]
+        self._expire()
 
         entry = self.pending.get(msg_id)
         if entry is None:
             if len(self.pending) >= self.max_pending:
                 # Oldest incomplete message will never finish: drop it.
                 oldest = min(self.pending, key=lambda k: self.pending[k][3])
-                del self.pending[oldest]
+                self._forget(oldest)
                 self.dropped += 1
-            entry = [total, crc, {}, time.monotonic()]
+            entry = [total, crc, {}, self.clock()]
             self.pending[msg_id] = entry
-        if entry[0] != total or entry[1] != crc:
+        if entry[0] != total or entry[1] != crc or index in entry[2]:
             return None
+        while self.held + len(piece) > self.max_bytes and self.pending:
+            oldest = min(self.pending, key=lambda k: self.pending[k][3])
+            self._forget(oldest)
+            self.dropped += 1
+            if oldest == msg_id:
+                return None
         entry[2][index] = piece
+        self.held += len(piece)
         if len(entry[2]) < total:
             return None
 
-        del self.pending[msg_id]
+        self._forget(msg_id)
         payload = b"".join(entry[2][i] for i in range(total))
         if zlib.crc32(payload) != crc:
             self.dropped += 1
@@ -572,7 +713,119 @@ class Reassembler:
         # A complete message supersedes older partial ones (sender sends in
         # order), so clear them to free memory.
         self.pending.clear()
+        self.held = 0
         return payload
+
+
+# --------------------------------------------------------------------------
+# Message authentication
+#
+# sealed = b"DYA1" | boot id (8) | counter (u64) | message | HMAC-SHA256 (32)
+# The HMAC covers everything before it.  The boot id is random per sender
+# process and the counter rises with every message, so a captured message
+# cannot be replayed into the same stream.  Reordering within `window` is
+# tolerated (log batches are sent twice and may arrive out of order).
+# --------------------------------------------------------------------------
+
+AUTH_MAGIC = b"DYA1"
+AUTH_HEAD = struct.Struct(">4s8sQ")
+AUTH_TAG = 32
+
+
+class MessageAuth:
+    def __init__(self, key, window=4096, max_streams=8):
+        self.key = key
+        self.boot = secrets.token_bytes(8)
+        self.counter = 0
+        self.window = window
+        self.max_streams = max_streams
+        self.streams = collections.OrderedDict()   # boot -> [highest, set(recent)]
+        self.rejected = 0
+        self._warned_at = None
+        self._warned_count = 0
+
+    def _tag(self, data):
+        return hmac.new(self.key, data, hashlib.sha256).digest()
+
+    def seal(self, payload):
+        self.counter += 1
+        head = AUTH_HEAD.pack(AUTH_MAGIC, self.boot, self.counter)
+        return head + payload + self._tag(head + payload)
+
+    def sign_text(self, text):
+        """Hex HMAC of a text, for fields inside a JSON document."""
+        return self._tag(text.encode("utf-8")).hex()
+
+    def verify_text(self, text, mac):
+        return isinstance(mac, str) and hmac.compare_digest(self.sign_text(text), mac)
+
+    def open(self, sealed):
+        """Return the message if `sealed` is genuine and new, else None."""
+        if len(sealed) < AUTH_HEAD.size + AUTH_TAG:
+            self.rejected += 1
+            return None
+        magic, boot, counter = AUTH_HEAD.unpack_from(sealed)
+        body, tag = sealed[:-AUTH_TAG], sealed[-AUTH_TAG:]
+        if magic != AUTH_MAGIC or not hmac.compare_digest(self._tag(body), tag):
+            self.rejected += 1
+            return None
+        stream = self.streams.get(boot)
+        if stream is None:
+            stream = [0, set()]
+            self.streams[boot] = stream
+            while len(self.streams) > self.max_streams:
+                self.streams.popitem(last=False)
+        else:
+            self.streams.move_to_end(boot)
+        highest, recent = stream
+        if counter <= highest - self.window or counter in recent:
+            self.rejected += 1          # replayed, or far too old
+            return None
+        recent.add(counter)
+        if counter > highest:
+            stream[0] = counter
+            floor = counter - self.window
+            stream[1] = {c for c in recent if c > floor}
+        return body[AUTH_HEAD.size:]
+
+    def unseal(self, sealed, module=None, every=60.0):
+        """open(), logging rejections at most once per `every` seconds."""
+        msg = self.open(sealed)
+        if msg is None:
+            now = time.monotonic()
+            if self._warned_at is None or now - self._warned_at >= every:
+                log.warning("module %r: %d message(s) rejected: not signed with "
+                            "this box's key, or replayed", module,
+                            self.rejected - self._warned_count)
+                self._warned_at, self._warned_count = now, self.rejected
+        return msg
+
+
+# --------------------------------------------------------------------------
+# Receiving sockets
+# --------------------------------------------------------------------------
+
+def diode_socket(cfg, port, rcvbuf=None, bind=None):
+    """UDP socket for traffic from the input box: bound to out_ip and, where
+    the kernel allows it, to the diode NIC itself (SO_BINDTODEVICE), so a
+    datagram that reaches out_ip through another interface is not seen.
+    `bind` overrides the address (tests) and skips the device binding."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    if rcvbuf:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+    if bind is None:
+        iface = cfg["network"].get("out_interface")
+        try:
+            if not iface:
+                raise OSError("no out_interface configured")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                            iface.encode() + b"\0")
+        except (OSError, AttributeError) as err:
+            log.warning("cannot bind to interface %s (%s); relying on the "
+                        "firewall to keep other interfaces out", iface, err)
+        bind = (cfg["network"]["out_ip"], port)
+    sock.bind(bind)
+    return sock
 
 
 # --------------------------------------------------------------------------

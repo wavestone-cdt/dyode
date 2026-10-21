@@ -796,9 +796,10 @@ def run_logs_input(name, props, cfg, stop=None):
     stop = stop or threading.Event()
     addr = (cfg["network"]["out_ip"], props["port"])
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    auth = common.require_auth(cfg)
 
     def send(payload):
-        common.udp_send(out, addr, payload)
+        common.udp_send(out, addr, payload, auth=auth)
 
     sender, threads, _ = start_input(name, props, send, stop)
     sources = []
@@ -1135,16 +1136,14 @@ class LogReceiver:
 
 
 def start_output(props, cfg, udp_bind=None, module=None, clock=time.monotonic):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
-    sock.bind(udp_bind or (cfg["network"]["out_ip"], props["port"]))
+    sock = common.diode_socket(cfg, props["port"], rcvbuf=8 * 1024 * 1024, bind=udp_bind)
     sock.settimeout(0.5)
     receiver = LogReceiver(make_sinks(props), props, module=module, clock=clock)
     return sock, receiver
 
 
-def receive_loop(sock, receiver, stop, name=None):
-    reasm = common.Reassembler(max_pending=32)
+def receive_loop(sock, receiver, stop, name=None, auth=None):
+    reasm = common.Reassembler(max_pending=32, max_pieces=256)
     last_stats = time.monotonic()
     while not stop.is_set():
         try:
@@ -1157,6 +1156,8 @@ def receive_loop(sock, receiver, stop, name=None):
             raise
         if data:
             payload = reasm.feed(data)
+            if payload is not None and auth is not None:
+                payload = auth.unseal(payload, name)
             if payload is not None:
                 receiver.feed(payload)
         receiver.poll()
@@ -1171,6 +1172,7 @@ def receive_loop(sock, receiver, stop, name=None):
 def run_logs_output(name, props, cfg, stop=None):
     common.setup_logging(cfg.get("_log_level", "INFO"), cfg)
     stop = stop or threading.Event()
+    auth = common.require_auth(cfg)
     sock, receiver = start_output(props, cfg, module=name)
     where = []
     if props["out"]:
@@ -1179,4 +1181,4 @@ def run_logs_output(name, props, cfg, stop=None):
     where += ["%s://%s:%d" % f for f in props["forward"]]
     log.info("module %r: receiving logs on %s:%d -> %s", name,
              *sock.getsockname()[:2], ", ".join(where))
-    receive_loop(sock, receiver, stop, name)
+    receive_loop(sock, receiver, stop, name, auth=auth)

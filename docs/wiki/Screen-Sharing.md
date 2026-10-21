@@ -26,7 +26,9 @@ flowchart LR
 3. The output module keeps the latest **complete** frame. Each frame is
    CRC-checked, so a damaged frame is dropped and never shown.
 4. Browse to `http://<output-ip>:8080/` for a live view. `/screen.jpg` gives
-   a single still, handy for dashboards.
+   a single still, handy for dashboards. The page listens on the output
+   box's IT-side address (not the diode NIC) unless `http_bind` says
+   otherwise, and serves at most `max_streams` (8) live viewers.
 
 There is no keyboard or mouse path. The picture is strictly view-only,
 because nothing can travel back through the diode.

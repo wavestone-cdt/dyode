@@ -20,6 +20,7 @@ import logging
 import os
 import queue
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -170,12 +171,12 @@ class UdpCast:
     IDLE_FRACTION = 0.8
 
     @staticmethod
-    def _run(cmd, quiet=False):
+    def _run(cmd, quiet=False, pass_fds=()):
         """Run cmd. Returns (ok, stderr_text, elapsed_seconds)."""
         log.debug("running: %s", cmd)
         started = time.monotonic()
         try:
-            res = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+            res = subprocess.run(cmd, stdin=subprocess.DEVNULL, pass_fds=pass_fds,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except FileNotFoundError:
             common.die("%s not found: install udpcast" % cmd[0])
@@ -190,6 +191,12 @@ class UdpCast:
 
     def send(self, path):
         return self._run(self.sender_cmd(path))[0]
+
+    def send_fd(self, fd):
+        """Send the file already open as `fd`.  udp-sender opens
+        /proc/self/fd/<fd>, which is that same file whatever its path now
+        points to -- see open_ready_file()."""
+        return self._run(self.sender_cmd("/proc/self/fd/%d" % fd), pass_fds=(fd,))[0]
 
     def receive(self, path):
         """Wait for one transfer.
@@ -373,13 +380,75 @@ def scan_ready_files(root, settle):
     return ready, waiting
 
 
-def build_manifest(files):
-    """files: list of (relpath, abspath). Hashes each file."""
+# A batch holds every file open from the moment it is checked until it is
+# sent; this keeps that well inside the default 1024 open-file limit.
+MAX_BATCH_FILES = 256
+
+
+def open_ready_file(root, rel):
+    """Open root/rel for reading without following any symlink, in any path
+    component.  Returns a descriptor on a regular file, or None.
+
+    The scan only looked at the path.  Hashing and sending the same open
+    descriptor means a file swapped for a link (or a folder swapped for a
+    link) after the scan cannot make DYODE send something else: the earlier
+    version re-opened the path, so a drop-folder user could have any file
+    the input box can read sent through the diode.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    dfd = None
+    try:
+        dfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
+        parts = rel.split("/")
+        for part in parts[:-1]:
+            nfd = os.open(part, flags | os.O_DIRECTORY, dir_fd=dfd)
+            os.close(dfd)
+            dfd = nfd
+        fd = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=dfd)
+    except OSError:
+        return None
+    finally:
+        if dfd is not None:
+            os.close(dfd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        return None
+    os.set_blocking(fd, True)
+    return fd
+
+
+def hash_fd(fd, blocksize=1024 * 1024):
+    """SHA-256 and size of an open file, read from the start; the
+    descriptor's own offset is left alone (pread)."""
+    hasher = hashlib.sha256()
+    offset = 0
+    while True:
+        block = os.pread(fd, blocksize, offset)
+        if not block:
+            break
+        hasher.update(block)
+        offset += len(block)
+    return hasher.hexdigest(), offset
+
+
+def manifest_text(manifest):
+    """The canonical text a manifest's signature covers."""
+    body = {k: v for k, v in manifest.items() if k != "mac"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def build_manifest(files, auth=None):
+    """files: list of (relpath, abspath, fd). Hashes each open file and,
+    with `auth`, signs the manifest."""
     entries = []
-    for rel, path in files:
-        entries.append({"path": rel, "size": os.path.getsize(path),
-                        "sha256": hash_file(path)})
-    return {"magic": MANIFEST_MAGIC, "batch": uuid.uuid4().hex, "files": entries}
+    for rel, _path, fd in files:
+        digest, size = hash_fd(fd)
+        entries.append({"path": rel, "size": size, "sha256": digest})
+    manifest = {"magic": MANIFEST_MAGIC, "batch": uuid.uuid4().hex, "files": entries}
+    if auth is not None:
+        manifest["mac"] = auth.sign_text(manifest_text(manifest))
+    return manifest
 
 
 SENT_DIR = ".dyode_sent"
@@ -438,9 +507,41 @@ def prune_sent(root, keep_sent_hours):
 
 
 def send_batch(files, transport, workdir, module=None, root=None,
-               file_gap=0.0, keep_sent_hours=24):
-    """Send one batch. Returns the number of files sent."""
-    manifest = build_manifest(files)
+               file_gap=0.0, keep_sent_hours=24, auth=None):
+    """Send one batch (at most MAX_BATCH_FILES files; the rest wait for the
+    next pass). Returns the number of files sent."""
+    opened = []
+    try:
+        for rel, path in files[:MAX_BATCH_FILES]:
+            if root is not None:
+                fd = open_ready_file(root, rel)
+            else:                         # callers without a root: the path itself
+                fd = open_ready_file(os.path.dirname(path) or ".", os.path.basename(path))
+            if fd is None:
+                log.warning("skipped %s: not a regular file any more (replaced by a "
+                            "link, or removed since the scan)", rel)
+                common.log_event("file_skipped", module=module, per_file=True,
+                                 path=rel, reason="not_regular_file")
+                continue
+            opened.append((rel, path, fd))
+        if not opened:
+            return 0
+        return _send_opened(opened, transport, workdir, module, root, file_gap,
+                            keep_sent_hours, auth)
+    finally:
+        for _rel, _path, fd in opened:
+            os.close(fd)
+
+
+def _send_fd(transport, fd):
+    if hasattr(transport, "send_fd"):
+        return transport.send_fd(fd)
+    return transport.send("/proc/self/fd/%d" % fd)
+
+
+def _send_opened(files, transport, workdir, module, root, file_gap,
+                 keep_sent_hours, auth):
+    manifest = build_manifest(files, auth)
     batch = manifest["batch"]
     manifest_path = os.path.join(workdir, "manifest_%s.json" % batch)
     with open(manifest_path, "w", encoding="utf-8") as fh:
@@ -458,9 +559,9 @@ def send_batch(files, transport, workdir, module=None, root=None,
 
     sent = 0
     sent_bytes = 0
-    for (rel, path), entry in zip(files, manifest["files"]):
+    for (rel, path, fd), entry in zip(files, manifest["files"]):
         log.info("sending %s (%d bytes)", rel, entry["size"])
-        if not transport.send(path):
+        if not _send_fd(transport, fd):
             log.error("aborting batch; %d file(s) left for the next batch",
                       len(files) - sent)
             break
@@ -493,6 +594,7 @@ def run_folder_input(name, props, cfg):
     file_gap = float(props.get("file_gap", 0.5))
     keep_sent_hours = props.get("keep_sent_hours", 24)
     transport = UdpCast(props, cfg)
+    auth = common.require_auth(cfg)
     watcher = ChangeWatcher(root)
     workdir = tempfile.mkdtemp(prefix="dyode_%s_" % props["port"])
     log.info("module %r: watching %s (port %d, %d Mbit/s, FEC %s, gap %.2fs, "
@@ -506,7 +608,8 @@ def run_folder_input(name, props, cfg):
             ready, waiting = scan_ready_files(root, settle)
             if ready:
                 send_batch(ready, transport, workdir, module=name, root=root,
-                           file_gap=file_gap, keep_sent_hours=keep_sent_hours)
+                           file_gap=file_gap, keep_sent_hours=keep_sent_hours,
+                           auth=auth)
                 continue
             prune_sent(root, keep_sent_hours)
             watcher.wait(settle if waiting else rescan)
@@ -533,9 +636,10 @@ def safe_join(root, rel):
     return path
 
 
-def read_manifest(path):
+def read_manifest(path, auth=None):
     """Return the manifest dict if the file at path is a valid manifest,
-    otherwise None."""
+    otherwise None.  With `auth`, the manifest must carry a valid signature
+    (field 'mac'); an unsigned or forged one is refused."""
     try:
         if os.path.getsize(path) > MAX_MANIFEST_BYTES:
             return None
@@ -556,7 +660,51 @@ def read_manifest(path):
                 and isinstance(e.get("size"), int)
                 and isinstance(e.get("sha256"), str) and len(e["sha256"]) == 64):
             return None
+    if auth is not None and not auth.verify_text(manifest_text(data), data.get("mac")):
+        log.warning("received a manifest that is not signed with this box's key; "
+                    "refused (batch %s)", str(data.get("batch"))[:8])
+        common.log_event("manifest_rejected", batch=str(data.get("batch"))[:8],
+                         reason="bad_signature")
+        return "forged"
     return data
+
+
+def place_file(out_dir, rel, blob):
+    """Move blob to out_dir/rel without following any symlink, creating
+    missing folders on the way.  Returns the destination path, or None if a
+    component is a link or not a folder.
+
+    safe_join() alone checks the path as text; a link already inside out/
+    (from a read-write share, say) would have taken a received file wherever
+    it pointed, as root.  Here every folder is opened with O_NOFOLLOW
+    relative to the one before, and the final rename is relative to that
+    descriptor; rename() replaces a link at the final name rather than
+    following it.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    parts = rel.split("/")
+    dfd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, 0o755, dir_fd=dfd)
+            except FileExistsError:
+                pass
+            try:
+                nfd = os.open(part, flags, dir_fd=dfd)
+            except OSError:
+                return None                 # a link, or a file, in the way
+            os.close(dfd)
+            dfd = nfd
+        try:
+            if stat.S_ISDIR(os.stat(parts[-1], dir_fd=dfd, follow_symlinks=False).st_mode):
+                return None
+        except FileNotFoundError:
+            pass
+        os.replace(blob, parts[-1], dst_dir_fd=dfd)
+    finally:
+        os.close(dfd)
+    return os.path.join(out_dir, *parts)
 
 
 class _Batch:
@@ -627,10 +775,15 @@ class FolderReceiver:
 
     RETAIN_BATCHES = 4
 
-    def __init__(self, out_dir, module=None):
+    # Batch ids seen recently: a replayed manifest is refused.
+    REMEMBER_BATCHES = 1024
+
+    def __init__(self, out_dir, module=None, auth=None):
         self.out_dir = out_dir
         self.module = module
         self.batches = collections.OrderedDict()
+        self.auth = auth
+        self.seen_batches = collections.deque(maxlen=self.REMEMBER_BATCHES)
 
     # -- batch bookkeeping ------------------------------------------------
 
@@ -719,8 +872,20 @@ class FolderReceiver:
     def handle(self, blob):
         """Process one received file. Always consumes (moves or deletes) it.
         Returns one of: 'manifest', 'stored', 'rejected', 'orphan'."""
-        manifest = read_manifest(blob)
+        manifest = read_manifest(blob, self.auth)
+        if manifest == "forged":
+            os.remove(blob)
+            return "rejected"
+        if manifest is not None and self.auth is not None \
+                and manifest.get("batch") in self.seen_batches:
+            log.warning("manifest for batch %s received again; replay refused",
+                        str(manifest.get("batch"))[:8])
+            common.log_event("manifest_rejected", module=self.module,
+                             batch=str(manifest.get("batch"))[:8], reason="replayed")
+            os.remove(blob)
+            return "rejected"
         if manifest is not None:
+            self.seen_batches.append(manifest.get("batch"))
             batch = self._add_batch(manifest)
             log.info("manifest received: %d file(s), batch %s",
                      batch.expected, batch.id[:8])
@@ -773,8 +938,17 @@ class FolderReceiver:
             self._finish_if_done(batch)
             return "rejected"
 
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        os.replace(blob, dest)            # atomic: same filesystem
+        dest = place_file(self.out_dir, entry["path"], blob)   # atomic: same filesystem
+        if dest is None:
+            log.error("refused to store %r: a folder on its path is a symlink or "
+                      "not a folder", entry["path"])
+            batch.rejected += 1
+            common.log_event("file_rejected", module=self.module, per_file=True,
+                             batch=batch.id[:8], path=entry["path"],
+                             reason="unsafe_destination")
+            os.remove(blob)
+            self._finish_if_done(batch)
+            return "rejected"
         log.info("file %s available at %s", entry["path"], dest)
         batch.stored += 1
         batch.bytes += size
@@ -843,7 +1017,7 @@ def run_folder_output(name, props, cfg):
             pass
 
     transport = UdpCast(props, cfg)
-    receiver = FolderReceiver(out_dir, module=name)
+    receiver = FolderReceiver(out_dir, module=name, auth=common.require_auth(cfg))
     log.info("module %r: receiving into %s via %s (port %d)",
              name, out_dir, staging, props["port"])
 

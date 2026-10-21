@@ -34,7 +34,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_BASE="$ROOT/packaging/debs"
 TARGETS="${TARGETS:-ubuntu-24.04/amd64 ubuntu-24.04/arm64 ubuntu-26.04/amd64 ubuntu-26.04/arm64 debian-12/arm64 debian-13/arm64}"
 # DYODE itself needs these.
-CORE_PKGS="udpcast python3-venv"
+CORE_PKGS="udpcast python3-venv nftables"
 # Optional services for serving received files, installed only on request
 # (install.sh --with).  Keep in step with service_pkgs() in install.sh.
 # Clients are listed explicitly so a client-only install (--with

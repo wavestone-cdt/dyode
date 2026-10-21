@@ -287,3 +287,44 @@ hardware:
   changes the disk encryption setup, so only use it if needed.
 - **Headroom:** `bitrate` around 800 on a gigabit diode, or a stronger `fec`
   (for example `8x32/64`), at a cost in bandwidth.
+
+## Security (1.5.0)
+
+1.5.0 signs every message through the diode and firewalls the diode ports.
+What that does and does not cover:
+
+- **Both v1 boxes need the same `dyode.key`.** DYODE stops at start-up
+  without it. The setup wizard creates it on the first box and copies it on
+  the second (from beside the imported `config.yaml`); `python3
+  dyode_setup.py --new-key` creates one by hand. Anyone holding the key can
+  forge messages, so keep it off file shares and out of e-mail.
+- **Mixed versions do not work.** A 1.5.0 output box rejects a 1.4.x input
+  box's unsigned messages, with *"message(s) rejected: not signed with this
+  box's key"* in its log. Upgrade both together.
+- **`auth.required: false`** runs unauthenticated with a warning at every
+  start. Use it only to bring a pair up while the key is being copied.
+- **DYODE v2 (serial) is not signed.** Its optocoupler link is physically
+  one-way and point-to-point, so there is no network to spoof from.
+- **udp-receiver itself is not authenticated.** A sender that gets past the
+  firewall can still make it write a file into staging, but the file is
+  discarded unless a signed manifest names its SHA-256.
+- **Replay protection is in memory.** After the output service restarts, a
+  recorded batch could be accepted once more. It can only bring back files
+  that were genuinely sent before (possibly older versions of them).
+- **The firewall covers the diode ports only.** The Modbus server
+  (`port_out`) and the screen viewer face the IT network by design; restrict
+  them with your own rules if needed. `--no-firewall` skips the rules;
+  `sudo nft list table inet dyode` shows their drop counters. The service
+  `dyode-firewall.service` reloads them at boot, after `nftables.service`
+  (whose stock configuration flushes every table).
+- **Interface binding is best effort.** The Modbus, log and screen
+  listeners bind to the diode NIC with `SO_BINDTODEVICE`. Where that is not
+  allowed they log a warning and rely on the firewall.
+- **Files are sent from the descriptor DYODE opened**, through
+  `/proc/self/fd/N`, rather than from a private copy as first proposed in the
+  design review: a copy would double the disk space and time for multi-GB
+  batches. The effect is the same: what is hashed is what is sent, and links
+  are never followed.
+- **The Modbus mirror is read-only.** A SCADA client that wrote to it now
+  gets exception 01. Reads outside the configured ranges get exception 02;
+  `unmapped: zero` restores the old zeros.

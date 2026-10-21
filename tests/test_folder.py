@@ -24,7 +24,10 @@ class LoopbackCast:
         self.fail_on = None
 
     def send(self, path):
-        if self.fail_on is not None and self.fail_on in path:
+        # Files arrive as /proc/self/fd/N (the open descriptor DYODE checked);
+        # the link names the real file, which fail_on matches against.
+        name = os.readlink(path) if path.startswith("/proc/self/fd/") else path
+        if self.fail_on is not None and self.fail_on in name:
             return False
         self.sent_paths.append(path)
         with open(path, "rb") as fh:

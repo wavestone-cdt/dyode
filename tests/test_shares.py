@@ -98,8 +98,8 @@ class ShareTests(unittest.TestCase):
         res = self.both()
         self.assertEqual(res.returncode, 0, res.stderr)
         nfs = self.block(self.exports)
-        self.assertIn("%s  10.0.2.0/24(ro,sync,no_subtree_check,root_squash) "
-                      "10.0.3.7(ro,sync,no_subtree_check,root_squash)" % self.out, nfs)
+        self.assertIn("%s  10.0.2.0/24(ro,sync,subtree_check,root_squash) "
+                      "10.0.3.7(ro,sync,subtree_check,root_squash)" % self.out, nfs)
         self.assertIn("%s  10.0.2.0/24(rw," % self.drop, nfs)
         smb = self.block(self.smbconf)
         self.assertIn("[dyode-out]", smb)

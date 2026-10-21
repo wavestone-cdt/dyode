@@ -42,8 +42,15 @@ sequenceDiagram
   10), the output box logs *"no update for Ns, serving stale values"*. The
   server keeps answering with the last values, because Modbus has no way to
   say "stale", so **the log is the only signal**. Watch for it.
-- **One way only.** A client may write to the output box's server, but
-  those writes only change the mirror. Nothing can reach the PLC.
+- **Read-only.** The output box's server refuses every write with Modbus
+  exception 01 (Illegal Function), logged at most once a minute. Only values
+  that came through the diode are ever served, and nothing can reach the PLC.
+- **Unmapped addresses.** A read touching an address outside the
+  configured ranges gets exception 02 (Illegal Data Address), so a client
+  can tell "not mirrored" from "value 0". Set `unmapped: zero` for a SCADA
+  that polls a wider block than you mirror.
+- **Signed.** Each update carries the shared key's signature (see
+  [Security](Security)); a forged or replayed update is dropped.
 
 ## Address ranges
 

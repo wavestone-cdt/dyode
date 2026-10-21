@@ -122,11 +122,24 @@ add_smb_share() {                # add_smb_share "PATH=USER[:mode]" [name]
   SMB_SHARES+=("${path%/}|$user|$MODE_|$name")
 }
 
+# True if PATH is the root of its own filesystem (a dedicated mount).
+fs_root() {
+  local p="$1" a b
+  [ "$p" = / ] && return 0
+  a="$(stat -c %d "$p" 2>/dev/null)" || return 1
+  b="$(stat -c %d "$(dirname "$p")" 2>/dev/null)" || return 1
+  [ "$a" != "$b" ]
+}
+
 nfs_block() {
-  local s path clients mode opts line c
+  local s path clients mode opts line c check
   for s in "${NFS_SHARES[@]}"; do
     IFS='|' read -r path clients mode <<<"$s"
-    opts="$mode,sync,no_subtree_check,root_squash"
+    # A folder inside a larger filesystem is exported with subtree_check, so
+    # a client cannot use a guessed file handle to reach files outside it.
+    # A dedicated filesystem needs no check (and is the stronger option).
+    if fs_root "$path"; then check=no_subtree_check; else check=subtree_check; fi
+    opts="$mode,sync,$check,root_squash"
     line="$path "
     split_clients "$clients"
     for c in "${CLIENTS[@]}"; do line="$line $c($opts)"; done

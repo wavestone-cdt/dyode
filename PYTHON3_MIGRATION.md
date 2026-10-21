@@ -305,8 +305,12 @@ Everything below is optional; defaults match the original behaviour.
 | `logging.human` | top level | `dyode.log` | human-readable log file name |
 | `logging.json` | top level | `transfer.jsonl` | JSON event log file name |
 | `logging.per_file_events` | top level | `true` | `false` keeps batch summaries only |
-| `http_port`, `http_bind` | screen module | `8080`, `0.0.0.0` | screen-sharing web server |
+| `http_port`, `http_bind` | screen module | `8080`, IT-side address | screen-sharing web server (1.5.0: no longer every address) |
 | `max_fps` | screen module | `10` | frame rate cap |
+| `max_streams` | screen module | `8` | viewers at once (1.5.0) |
+| `unmapped` | modbus module | `exception` | reads outside the ranges: exception 02, or `zero` (1.5.0) |
+| `auth.key_file` | top level | `dyode.key` | shared message authentication key, beside `config.yaml` (1.5.0) |
+| `auth.required` | top level | `true` | `false` runs without authentication, with a warning (1.5.0) |
 
 Module `type` is now case-insensitive (`Modbus` works), and a typo in the
 config stops start-up with a clear message instead of silently doing nothing.
@@ -657,6 +661,10 @@ module 'transfer': watching /srv/in (port 9600, 900 Mbit/s, FEC off)
   are old.
 - **Crashed modules are restarted** by a supervisor (this was a TODO in the
   original).
+- **Messages are signed (1.5.0).** v1 needs the same `dyode.key` on both
+  boxes; the output box refuses anything else.
+- **The Modbus mirror is read-only (1.5.0).** Client writes get exception
+  01; unmapped reads get exception 02 unless `unmapped: zero`.
 
 ## Wire formats
 
@@ -670,11 +678,16 @@ module 'transfer': watching /srv/in (port 9600, 900 Mbit/s, FEC off)
   number, the sender's dropped-line count and the lines. Each batch is sent
   `copies` times, spaced in time; the receiver de-duplicates and reorders
   by sequence number and reports gaps.
+- **Authentication (v1, 1.5.0):** each DYO1 message's payload is
+  `DYA1`, an 8-byte random sender id, a 64-bit counter, the message, and an
+  HMAC-SHA256 over all of that. The receiver refuses a bad tag and any
+  counter it has already seen (a window of 4096 per sender id).
 - **Serial (v2):** one message per line, `<crc32 hex> <compact JSON>\n`.
 - **File manifest (v1):** a JSON file listing each file's path, size and
   SHA-256, in sending order. If a batch is interrupted, the receiver
   resynchronizes on the next manifest instead of rejecting everything that
-  follows.
+  follows. From 1.5.0 it carries `mac`, an HMAC of the manifest's canonical
+  JSON (sorted keys, no spaces, without `mac`).
 
 ## Tests
 
@@ -682,12 +695,14 @@ module 'transfer': watching /srv/in (port 9600, 900 Mbit/s, FEC off)
 python3 -m unittest discover -s tests
 ```
 
-This runs 179 tests in about 30 seconds, with no network or hardware
+This runs about 290 tests in under a minute, with no network or hardware
 needed. The tests use small stand-in versions of pymodbus and pyserial
 (`tests/fakes/`), so they exercise all of DYODE's own logic, including
 end-to-end UDP, serial, HTTP and multiprocessing paths, plus the setup
 wizard driven through a real pseudo-terminal, but **not the real
-libraries**. Before relying on it, run a real check on your hardware:
+libraries**, except one Modbus test that runs a real pymodbus 3.12
+server when a `python3` with pymodbus is available (or `DYODE_TEST_PYTHON`
+names one). Before relying on it, run a real check on your hardware:
 
 1. On the output box, start `dyode_out.py --log-level DEBUG`.
 2. On the input box, start `dyode_in.py --log-level DEBUG` with the PLC

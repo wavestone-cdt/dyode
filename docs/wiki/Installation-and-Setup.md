@@ -33,8 +33,9 @@ flowchart TB
         VENV --> WHEELS["pip install --no-index<br/>from packaging/wheels"]
         WHEELS --> IMPORT["Check every package imports"]
         IMPORT --> TUNE["Receiving box: kernel settings<br/>/etc/sysctl.d/90-dyode-receive.conf"]
-        TUNE --> WIZ["Setup wizard"]
-        WIZ --> SHARES["Optional: file shares<br/>NFS / SMB"]
+        TUNE --> WIZ["Setup wizard<br/>+ dyode.key"]
+        WIZ --> FWALL["Receiving box: firewall<br/>/etc/dyode/firewall.nft"]
+        FWALL --> SHARES["Optional: file shares<br/>NFS / SMB"]
     end
 
     INSTALL --> Q
@@ -52,6 +53,8 @@ sudo ./install.sh --with ssh,nfs,smb                # add file-sharing servers
 sudo ./install.sh --with clients                    # only sftp / mount.nfs / mount.cifs / smbclient
 sudo ./install.sh --shares-only --share-nfs /srv/dyode/out=10.0.2.0/24   # change shares later
 sudo ./install.sh --tuning-only                     # (re)apply receive-side kernel settings
+sudo ./install.sh --firewall-only                   # (re)apply the diode-port firewall
+sudo ./install.sh --offline --variant v1 --yes --no-wizard --no-firewall   # unattended, no firewall
 ./install.sh --dry-run                              # show what would happen
 ```
 
@@ -71,12 +74,15 @@ flowchart LR
     D --> E["Add, edit or remove<br/>modules"]
     E --> F["Validate with the<br/>runtime's own checks"]
     F --> G["Write config.yaml<br/>(previous copy backed up)"]
-    G --> H["Optional: generate<br/>dyode-in/out.service"]
+    G --> KEY["First box: create dyode.key<br/>Second box: copy it from<br/>beside the imported file"]
+    KEY --> H["Optional: generate<br/>dyode-in/out.service"]
 ```
 
-On v1, **both boxes must use the same `config.yaml`**. Run the wizard on one
-box, copy the file to the other, run it there to fill in that box's
-interface and MAC, then copy the final file back.
+On v1, **both boxes must use the same `config.yaml` and the same
+`dyode.key`**. Run the wizard on one box (it creates the key), copy both
+files to the other, run it there and import the config (it copies the key
+found beside it), then copy the final `config.yaml` back. To make a key by
+hand: `python3 dyode_setup.py --new-key`.
 
 ### The systemd service
 
@@ -139,9 +145,27 @@ encrypted disks. See [Troubleshooting](Troubleshooting#large-transfers-fail-part
 Use `--no-tuning` to skip them, or `--tuning-only` to apply them to an
 existing box.
 
+## Diode-port firewall
+
+On a receiving v1 box, `install.sh` installs nftables rules so the diode
+ports accept traffic only on the diode NIC from the input box. Nothing else
+on the box is filtered. Details in [Security](Security#the-firewall).
+
+| File | Purpose |
+|---|---|
+| `/etc/dyode/firewall.nft` | The rules: one table, `inet dyode` |
+| `/etc/systemd/system/dyode-firewall.service` | Loads them at boot, after `nftables.service` |
+| `/etc/sysctl.d/92-dyode-firewall.conf` | `rp_filter=1` on the diode NIC |
+
+`--no-firewall` skips this step (interactive or unattended);
+`--firewall-only` reapplies it after `config.yaml` changes.
+
 ## Upgrading
 
 Upgrade **both boxes together**. Copy the new release over, run
-`sudo ./install.sh` again on each box, and restart the services. Your
+`sudo ./install.sh` again on each box, and restart the services. Upgrading
+to 1.5.0 or later from 1.4.x also needs the key: create it on one box with
+`python3 dyode_setup.py --new-key` and copy `DYODE_v1_full/dyode.key` to the
+other. Your
 `config.yaml`, shares and settings are kept. A repeat run changes only what
 differs.

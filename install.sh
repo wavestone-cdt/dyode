@@ -36,6 +36,12 @@
 #                             (/etc/sysctl.d/90-dyode-receive.conf; see
 #                             CAVEATS.md).  Never installed with --side in.
 #   --tuning-only             only install those settings; install nothing
+#   --no-firewall             do not install the diode-port firewall rules
+#                             (nftables table "inet dyode": diode ports accept
+#                             traffic only on the diode NIC from the input box).
+#                             Installed by default except with --side in.
+#   --firewall-only           only (re)apply the firewall rules from config.yaml
+#   --config FILE             config.yaml to use with --firewall-only
 #   --skip-os-packages        do not install udpcast / python venv support
 #   --no-wizard               do not start the setup wizard afterwards
 #   -y, --yes                 do not ask for confirmation
@@ -54,7 +60,7 @@ OS_RELEASE="${DYODE_OS_RELEASE:-/etc/os-release}"
 
 MODE="" VARIANT="" SIDE="" PYTHON="" WITH="" WITH_GIVEN=0
 ASSUME_YES=0 RUN_WIZARD=1 SKIP_OS=0 DRY_RUN=0
-SHARES_ONLY=0 NO_SHARES=0 NO_TUNING=0 TUNING_ONLY=0 SHARE_NFS_SPECS=() SHARE_SMB_SPECS=() SMB_PW_FILE=""
+SHARES_ONLY=0 NO_SHARES=0 NO_TUNING=0 TUNING_ONLY=0 NO_FIREWALL=0 FIREWALL_ONLY=0 FW_CONFIG="" SHARE_NFS_SPECS=() SHARE_SMB_SPECS=() SMB_PW_FILE=""
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -69,6 +75,8 @@ interactive() { [ -t 0 ] && [ -t 1 ]; }
 . "$ROOT/lib/install-shares.sh"
 # shellcheck source=lib/install-tuning.sh
 . "$ROOT/lib/install-tuning.sh"
+# shellcheck source=lib/install-firewall.sh
+. "$ROOT/lib/install-firewall.sh"
 
 # ---------------------------------------------------------------- arguments
 while [ $# -gt 0 ]; do
@@ -95,6 +103,10 @@ while [ $# -gt 0 ]; do
     --shares-only) SHARES_ONLY=1 ;;
     --no-tuning) NO_TUNING=1 ;;
     --tuning-only) TUNING_ONLY=1 ;;
+    --no-firewall) NO_FIREWALL=1 ;;
+    --firewall-only) FIREWALL_ONLY=1 ;;
+    --config) FW_CONFIG="${2:-}"; shift ;;
+    --config=*) FW_CONFIG="${1#*=}" ;;
     --skip-os-packages) SKIP_OS=1 ;;
     --no-wizard) RUN_WIZARD=0 ;;
     -y|--yes)  ASSUME_YES=1 ;;
@@ -171,6 +183,25 @@ if [ "$TUNING_ONLY" -eq 1 ]; then
   [ "$(id -u)" -eq 0 ] || [ "$DRY_RUN" -eq 1 ] || [ -n "${DYODE_ETC:-}" ] ||
     die "installing kernel settings needs root: run with sudo"
   apply_tuning
+  exit 0
+fi
+
+# --firewall-only: (re)apply the diode-port firewall from config.yaml and stop.
+if [ "$FIREWALL_ONLY" -eq 1 ]; then
+  [ "$NO_FIREWALL" -eq 0 ] || die "--firewall-only and --no-firewall contradict each other"
+  [ "$SIDE" != in ] || die "--firewall-only is for receiving boxes; this one was given --side in"
+  [ "$(id -u)" -eq 0 ] || [ "$DRY_RUN" -eq 1 ] || [ -n "${DYODE_ETC:-}" ] ||
+    die "installing firewall rules needs root: run with sudo"
+  FW_CFG="" FW_PY="${PYTHON:-python3}"
+  if [ -n "$FW_CONFIG" ]; then
+    FW_CFG="$FW_CONFIG"
+    d="$(dirname "$FW_CONFIG")"
+    [ -x "$d/venv/bin/python" ] && FW_PY="$d/venv/bin/python"
+  else
+    find_config_and_python || die "no config.yaml found; run the setup wizard first, or pass --config FILE"
+  fi
+  [ -f "$FW_CFG" ] || die "no such config file: $FW_CFG"
+  apply_firewall "$FW_CFG" "$FW_PY"
   exit 0
 fi
 
@@ -307,6 +338,9 @@ if [ "$SKIP_OS" -eq 0 ]; then
   if [ "$VARIANT" = v1 ] && ! command -v udp-sender >/dev/null 2>&1; then
     PKGS+=(udpcast)
   fi
+  if firewall_wanted && ! command -v nft >/dev/null 2>&1; then
+    PKGS+=(nftables)
+  fi
   if [ -z "$PY" ]; then
     die "no Python 3.11 or newer found (supported: $SUPPORTED); install one, or pass --python"
   elif ! venv_ok "$PY"; then
@@ -345,6 +379,7 @@ say "  virtualenv:   ${VENV#"$ROOT"/}"
 say "  packages:     ${REQ#"$ROOT"/}  (from $([ "$MODE" = offline ] && echo "${WHEELS#"$ROOT"/}" || echo PyPI))"
 [ "$RUN_WIZARD" -eq 1 ] && say "  then:         the setup wizard"
 describe_tuning
+describe_firewall
 describe_shares
 
 if [ "$ASSUME_YES" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -522,6 +557,18 @@ if [ "$RUN_WIZARD" -eq 1 ]; then
     say "Next: $VENV/bin/python $ROOT/dyode_setup.py ${args[*]}"
   fi
 fi
+
+# The message authentication key (v1): DYODE refuses to start without it.
+if [ "$VARIANT" = v1 ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$TARGET/config.yaml" ] &&
+   [ ! -f "$TARGET/dyode.key" ] && ! grep -q '^ *key_file:' "$TARGET/config.yaml"; then
+  warn "no message authentication key at $TARGET/dyode.key; DYODE will not start without it.
+   First box: $PY $ROOT/dyode_setup.py --new-key, then copy the key to the other box.
+   Second box: copy dyode.key from the first box beside config.yaml (chmod 600)."
+fi
+
+# ---------------------------------------------------------------- firewall
+# After the wizard, which writes the config.yaml the rules are built from.
+apply_firewall "$TARGET/config.yaml" "$([ -x "$VENV/bin/python" ] && echo "$VENV/bin/python" || echo "$PY")"
 
 # ---------------------------------------------------------------- shares
 # After the wizard, so its config.yaml can suggest the folders to share.

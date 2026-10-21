@@ -12,6 +12,7 @@ flowchart TB
     CFG --> NET["dyode_in / dyode_out<br/>addresses, MACs, interfaces"]
     CFG --> LOG["logging<br/>where log files go"]
     CFG --> SER["serial<br/>(v2 only)"]
+    CFG --> AUTH["auth<br/>message key (v1)"]
     CFG --> MODS["modules"]
     MODS --> MF["type: folder"]
     MODS --> MM["type: modbus"]
@@ -32,6 +33,16 @@ dyode_out:
   mac: b8:27:eb:b1:ff:ab # pinned on the input box (no ARP replies through a diode)
   interface: eth1        # NIC facing the diode on the output box
 ```
+
+## Authentication (v1)
+
+```yaml
+auth:                    # optional; these are the defaults
+  key_file: dyode.key    # relative to config.yaml's folder
+  required: true         # false: run unsigned, with a warning
+```
+
+The **same** `dyode.key` must be on both boxes. See [Security](Security).
 
 ## Logging
 
@@ -78,6 +89,7 @@ serial:
 | `plc_port`, `unit` | `502`, `1` | PLC's TCP port and Modbus unit id |
 | `interval` | `1.0` | Seconds between polls |
 | `port_out`, `bind_out` | `502`, `0.0.0.0` | Modbus server on the output box |
+| `unmapped` | `exception` | Reads outside the ranges: exception 02, or `zero` |
 | `stale_after` | `10` | Warn after this many seconds without updates |
 
 ## Module: `logs`
@@ -86,7 +98,7 @@ serial:
 |---|---|---|
 | `port` | *required* | UDP port through the diode |
 | `listen_udp`, `listen_tcp`, `tail` | at least one | Sources on the input box |
-| `allow_from` | anyone | Networks allowed to send syslog |
+| `allow_from` | anyone (the wizard warns) | Networks allowed to send syslog |
 | `out`, `forward` | at least one | Destinations on the output box |
 | `format` | `prefixed` | `prefixed`, `raw` or `json` |
 | `split_by_source` | `false` | One file per sending host |
@@ -102,7 +114,8 @@ serial:
 | `port` | *required* | UDP port through the diode |
 | `in` | *required* | Folder of JPEG screenshots (input box) |
 | `out` | *required* | Must be set; the output side serves frames from memory |
-| `http_port`, `http_bind` | `8080`, `0.0.0.0` | Web server on the output box |
+| `http_port`, `http_bind` | `8080`, IT-side address | Web server on the output box; `http_bind` defaults to the first address not on the diode NIC |
+| `max_streams` | `8` | Viewers at once; more get HTTP 503 |
 | `max_fps` | `10` | Frame rate cap |
 
 ## A complete example

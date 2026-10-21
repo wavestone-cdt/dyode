@@ -19,6 +19,8 @@ class ModbusDeviceContext:
         self.store[fc].setValues(address + 1, values)   # mimic pymodbus' +1
     def getValues(self, fc, address, count=1):
         return self.store[fc].getValues(address + 1, count)
+    def decode(self, fc):
+        return {1: "c", 5: "c", 15: "c", 3: "h", 6: "h", 16: "h"}.get(fc, "h")
 
 
 class ModbusServerContext:

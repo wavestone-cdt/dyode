@@ -27,6 +27,13 @@ logging:
   json: transfer.jsonl           # one JSON object per line, transfers only
   per_file_events: true          # false = batch summaries only
 
+# Optional (new in 1.5.0). Every message through the diode is signed with a
+# shared key: the SAME dyode.key file must sit beside config.yaml on both
+# boxes. Create it once with: python3 dyode_setup.py --new-key
+# auth:
+#   key_file: dyode.key        # relative to this file's folder
+#   required: true             # false = run unauthenticated (not recommended)
+
 modules:
   "Partage de fichier 1":
     type: folder
@@ -90,13 +97,18 @@ modules:
       - 0-10
       - 100-110
     # optional: plc_port: 502   unit: 1   interval: 1.0   stale_after: 10
+    # optional: unmapped: exception   reads outside the ranges above get
+    #                           Modbus exception 02; 'zero' answers 0 instead.
+    #                           Client writes always get exception 01.
 
   "Partage d'ecran presta":
     type: screen
     port: 9900
     in: /home/pi/screenz
     out: /home/pi/screenz
-    # optional: http_port: 8080   max_fps: 10
+    # optional: http_port: 8080   max_fps: 10   max_streams: 8
+    # optional: http_bind: 192.168.50.4   default: the first address not on
+    #                           the diode NIC (the IT side)
 
   "Journaux OT":
     type: logs              # stream logs one way, OT -> IT

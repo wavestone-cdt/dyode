@@ -30,6 +30,22 @@ flowchart TB
   `dyode_in.interface` is wrong. systemd keeps retrying, and DYODE starts
   by itself once the NIC is ready.
 - **"udp-sender not found".** Install udpcast (`sudo ./install.sh`).
+- **"no message authentication key at …".** `dyode.key` is missing. Copy
+  it from the other box (beside `config.yaml`, `chmod 600`), or create one
+  on the first box with `python3 dyode_setup.py --new-key` and copy it over.
+
+## Messages rejected (1.5.0 and later)
+
+- **"N message(s) rejected: not signed with this box's key, or replayed"**
+  or **"manifest … not signed with this box's key"**: the two boxes have
+  different `dyode.key` files, or one box still runs 1.4.x. Copy the same key
+  to both and upgrade both. If the keys match, something else is sending to
+  the diode port: check `sudo nft list table inet dyode` counters.
+- **Modbus client gets exception 01**: it tried to write. The mirror is
+  read-only. **Exception 02**: it read an address outside `registers` /
+  `coils`; widen the ranges or set `unmapped: zero`.
+- **"refused to store … a folder on its path is a symlink"**: something
+  created a link inside `out/`. Remove it; keep `out/` shares read-only.
 
 ## Nothing received
 

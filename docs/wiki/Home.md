@@ -78,6 +78,7 @@ supervised process.
 | [Modbus Mirroring](Modbus-Mirroring) | PLC polling and the mirrored Modbus server |
 | [Log Streaming](Log-Streaming) | Syslog and file tailing, gap detection, forwarding |
 | [Screen Sharing](Screen-Sharing) | Screenshots to a live browser view |
+| [Security](Security) | Message signing, the shared key, the firewall, and their limits |
 | [Installation and Setup](Installation-and-Setup) | Offline installer, setup wizard, systemd, file shares, kernel tuning |
 | [Configuration Reference](Configuration-Reference) | Every `config.yaml` key |
 | [Operations and Monitoring](Operations-and-Monitoring) | Logs, JSON events, rotation and archiving |
@@ -91,8 +92,11 @@ supervised process.
 - **Loss is reported, never silent.** Missing files, log gaps and stale
   Modbus data are all named in the log and as JSON events.
 - **No shell, no injection.** External programs are called with argument
-  lists. Manifest paths are checked so a file can never land outside the
-  output folder.
+  lists. Manifest paths are checked, and no symlink is ever followed, so a
+  file can never land outside the output folder.
+- **Only the input box is believed.** Messages are signed with a shared key
+  and the diode ports are firewalled, so the IT side cannot pose as the
+  diode.
 - **Offline first.** One release tarball installs on a machine with no
   internet access. Every file in the bundle is checksummed before anything
   changes.

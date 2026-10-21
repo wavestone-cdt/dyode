@@ -3,6 +3,69 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [1.5.0] - unreleased
+
+Security release, from the 2026-10-21 audit. **Upgrade both boxes together,
+and copy the new key file to both** (see *Upgrading* below): a 1.5.0 output
+box refuses unsigned messages from a 1.4.x input box.
+
+### Security
+
+- **Messages through the diode are signed.** Every Modbus update, log batch,
+  screen frame and folder manifest now carries an HMAC-SHA256 made with a
+  shared key, `dyode.key`, beside `config.yaml` on both boxes, plus a random
+  sender id and counter so a recorded message cannot be replayed. A host on
+  the IT network can no longer feed false values to the Modbus mirror, write
+  into the OT logs, or announce files for the output box to accept. Files are
+  matched to a signed manifest by SHA-256, so they are covered too. DYODE
+  stops at start-up if the key is missing; `auth.required: false` runs
+  unauthenticated, with a warning. Wire format: `DYA1` inside the DYO1
+  framing.
+- **Diode-port firewall (D-02).** `install.sh` now installs nftables rules on
+  receiving boxes: a datagram for a diode port is dropped unless it arrives on
+  the diode NIC from the input box (and never over IPv6). Nothing else on the
+  box is touched. `--no-firewall` skips it (works unattended too);
+  `--firewall-only` reapplies it. It also sets `rp_filter=1` on the diode NIC.
+  The Modbus, log and screen listeners additionally bind to the diode NIC.
+- **Received files are never placed through a symlink (D-01).** A link inside
+  `out/` (from a read-write share, for example) could take a file, written as
+  root, anywhere on the box. Every folder is now opened without following
+  links. A refusal logs `file_rejected` with `reason: unsafe_destination`.
+- **The input box sends exactly the file it checked (D-04).** A drop-folder
+  user could swap a file for a link after the scan and have any file the
+  input box can read sent across. Files are now opened once, without
+  following links, and hashed and sent from that open file.
+- **Reassembly is bounded (D-05).** Oversized pieces, messages announcing
+  more pieces than a module ever sends, partial messages older than 10 s and
+  anything over 32 MB held per listener are dropped, so a flood cannot
+  exhaust memory.
+- **The Modbus mirror is read-only (D-03).** Client writes get exception 01
+  (Illegal Function) and are logged. Reads outside the configured ranges get
+  exception 02 (Illegal Data Address); `unmapped: zero` keeps the old answer
+  of 0.
+- **Smaller items (D-10 to D-12).** NFS exports of a folder inside a larger
+  filesystem use `subtree_check`. The screen viewer listens on the IT-side
+  address by default instead of every address, and allows at most
+  `max_streams` (8) viewers. The wizard asks for syslog `allow_from` and warns
+  when it is empty.
+
+### Changed
+
+- pymodbus is pinned to 3.12 (`>=3.12,<3.13`): the read-only mirror uses its
+  exception-returning datastore API. Moving to 3.13 is planned separately.
+- New config keys: `auth.key_file`, `auth.required`, modbus `unmapped`,
+  screen `max_streams`. `http_bind` now defaults to the IT-side address.
+
+### Upgrading
+
+1. On one box: `python3 dyode_setup.py --new-key` (in the DYODE folder).
+2. Copy `DYODE_v1_full/dyode.key` to the other box, same folder, `chmod 600`.
+3. Run `sudo ./install.sh` on both boxes and restart both services.
+4. On the output box: `sudo nft list table inet dyode` shows the rules.
+
+A SCADA client that wrote to the mirror (a heartbeat register, say) now
+gets exceptions; those writes never reached the PLC.
+
 ## [1.4.3] - 2026-10-19
 
 ### Fixed

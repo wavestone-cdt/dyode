@@ -305,6 +305,7 @@ def _load_or_new(ui, args, variant):
 def _import_file(ui, path, variant):
     with open(path, encoding="utf-8") as fh:
         model = core.ConfigModel.from_yaml_text(fh.read(), variant)
+    model.imported_from = os.path.abspath(path)
     ui.info("Imported", ["Read %s" % path,
                          "%d module(s): %s" % (len(model.modules),
                                                ", ".join(m.name for m in model.modules))])
@@ -451,6 +452,14 @@ def _add_module(ui, model, mtype):
         if not udp.strip() and not tail.strip():
             ui.error("A logs module needs a source: a syslog port or files to follow.")
             return
+        allow = ""
+        if udp.strip():
+            allow = ui.text(name, "Accept syslog only from these networks", "",
+                            core.valid_network_list,
+                            help_text="Comma separated, e.g. 192.168.1.0/24, 10.0.0.5. "
+                                      "Leave empty to accept any sender (not "
+                                      "recommended: anything on the OT network could "
+                                      "then write into the logs).")
         out = ui.text(name, "Folder to write received logs to (output box)",
                       "/var/log/dyode-ot", lambda t: not t.strip() or core.valid_abs_path(t),
                       help_text="Leave empty to only forward.")
@@ -464,6 +473,8 @@ def _add_module(ui, model, mtype):
             return
         if udp.strip():
             props["listen_udp"] = int(udp)
+        if allow.strip():
+            props["allow_from"] = core.split_list(allow)
         if tail.strip():
             props["tail"] = core.split_list(tail)
         if out.strip():
@@ -512,6 +523,27 @@ def review_and_apply(ui, plan, dry_run=False):
 # Entry point
 # ==========================================================================
 
+def new_key(args):
+    path = args.key_file or os.path.join(core.target_dir("v1", "in", args.repo),
+                                         "dyode.key")
+    if args.dry_run:
+        print("Would create %s (--dry-run)" % path)
+        return 0
+    try:
+        core.common.generate_key_file(path)
+    except FileExistsError:
+        print("%s already exists. Not replacing it: both boxes must use the same key.\n"
+              "To change the key, delete it on BOTH boxes first." % path)
+        return 1
+    except OSError as err:
+        print("Could not create %s: %s" % (path, err))
+        return 1
+    print("Created %s (readable by its owner only).\n"
+          "Copy it to the other box, beside its config.yaml, and keep it secret:\n"
+          "anyone with this key can forge messages to the output box." % path)
+    return 0
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="DYODE installer and configuration wizard")
     p.add_argument("--plain", action="store_true",
@@ -526,6 +558,11 @@ def parse_args(argv=None):
     p.add_argument("--import-config", metavar="FILE",
                    help="import the other box's config.yaml straight away")
     p.add_argument("--dry-run", action="store_true", help="show, but write nothing")
+    p.add_argument("--new-key", action="store_true",
+                   help="create a new message authentication key (dyode.key) "
+                        "beside the v1 config.yaml and exit; copy it to the other box")
+    p.add_argument("--key-file", metavar="FILE",
+                   help="where --new-key writes the key (default: DYODE_v1_full/dyode.key)")
     p.add_argument("--all-interfaces", action="store_true",
                    help="also list virtual interfaces (lo, docker, ...)")
     p.add_argument("--sys-root", default="/sys/class/net", help=argparse.SUPPRESS)
@@ -535,6 +572,8 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.new_key:
+        return new_key(args)
     use_curses = not args.plain and sys.stdin.isatty() and sys.stdout.isatty()
     if use_curses:
         try:

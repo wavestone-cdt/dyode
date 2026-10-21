@@ -103,3 +103,7 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# DYODE message authentication keys: secret, never committed
+dyode.key
+*.key

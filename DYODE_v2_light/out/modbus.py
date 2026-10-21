@@ -13,7 +13,8 @@ DYODE v2 (light)/out/.
 
 Every pymodbus call lives in the "pymodbus shim" section so that an upgrade
 (e.g. to pymodbus 4.x) only has to touch that section. Tested API range:
-pymodbus 3.11 - 3.12 (see requirements.txt).
+pymodbus 3.12 (see requirements.txt; the read-only datastore relies on
+3.12 turning a returned ExcCodes value into a Modbus exception).
 """
 
 import asyncio
@@ -55,16 +56,53 @@ def make_tcp_client(host, port, timeout=3.0):
     return ModbusTcpClient(host, port=port, timeout=timeout)
 
 
-def make_server_context(size, unit):
-    """Datastore holding coils and holding registers 0..size-1."""
-    from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
-    try:
-        from pymodbus.datastore import ModbusDeviceContext as DeviceContext
-    except ImportError:                        # pymodbus < 3.10
-        from pymodbus.datastore import ModbusSlaveContext as DeviceContext
+def make_server_context(size, unit, ranges=None, unmapped="exception"):
+    """Read-only datastore holding coils and holding registers 0..size-1.
+
+    Clients can only read.  Every write request (function codes 5, 6, 15,
+    16, 22, 23) is answered with exception 01 (Illegal Function): the mirror
+    must only ever serve values that came through the diode, and before
+    1.5.0 any client could overwrite them -- for good, at addresses no poll
+    refreshes.  The diode path writes with the synchronous setValues(),
+    which pymodbus' server never calls.
+
+    `ranges` = {"c": [(start, end), ...], "h": [...]} (end excluded).  With
+    unmapped="exception" a read touching any address outside them gets
+    exception 02 (Illegal Data Address), so a client can tell "not mirrored"
+    from "value 0"; "zero" keeps the old answer.
+    """
+    from pymodbus.constants import ExcCodes
+    from pymodbus.datastore import ModbusDeviceContext, ModbusSequentialDataBlock, ModbusServerContext
+
+    class MirrorDevice(ModbusDeviceContext):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.ranges = ranges or {}
+            self.refused_writes = 0
+            self._warned = None
+
+        def covers(self, func_code, address, count):
+            return any(start <= address and address + count <= end
+                       for start, end in self.ranges.get(self.decode(func_code), ()))
+
+        async def async_getValues(self, func_code, address, count=1):
+            if unmapped == "exception" and not self.covers(func_code, address, count):
+                return ExcCodes.ILLEGAL_ADDRESS
+            return self.getValues(func_code, address, count)
+
+        async def async_setValues(self, func_code, address, values):
+            self.refused_writes += 1
+            now = time.monotonic()
+            if self._warned is None or now - self._warned >= 60:
+                log.warning("Modbus client write refused (function %d, address %d); "
+                            "the mirror is read-only [%d refused so far]",
+                            func_code, address, self.refused_writes)
+                self._warned = now
+            return ExcCodes.ILLEGAL_FUNCTION
+
     # +1: some pymodbus versions shift datastore addresses by one internally.
-    store = DeviceContext(co=ModbusSequentialDataBlock(0, [False] * (size + 1)),
-                          hr=ModbusSequentialDataBlock(0, [0] * (size + 1)))
+    store = MirrorDevice(co=ModbusSequentialDataBlock(0, [False] * (size + 1)),
+                         hr=ModbusSequentialDataBlock(0, [0] * (size + 1)))
     return ModbusServerContext(store, single=True)
 
 
@@ -188,6 +226,7 @@ def run_udp_input(name, props, cfg):
     poller = PlcPoller(name, props)
     interval = float(props.get("interval", 1.0))
     addr = (cfg["network"]["out_ip"], props["port"])
+    auth = common.require_auth(cfg)
     status = _FailureLog("module %r" % name)
     log.info("module %r: polling %s:%s every %ss, sending to %s:%s",
              name, props["ip"], props["plc_port"], interval, *addr)
@@ -195,7 +234,7 @@ def run_udp_input(name, props, cfg):
         while True:
             started = time.monotonic()
             try:
-                common.udp_send(sock, addr, common.encode_json(poller.poll()))
+                common.udp_send(sock, addr, common.encode_json(poller.poll()), auth=auth)
                 status.ok()
             except Exception as err:
                 status.fail(err)
@@ -270,7 +309,9 @@ class ModbusMirror:
         ends = [e for _, e in props["registers"]] + [e for _, e in props["coils"]]
         self.size = max(ends)
         self.unit = props["unit"]
-        self.context = context if context is not None else make_server_context(self.size, self.unit)
+        ranges = {"c": props["coils"], "h": props["registers"]}
+        self.context = context if context is not None else make_server_context(
+            self.size, self.unit, ranges, props.get("unmapped", "exception"))
         self.last_update = None
         self.last_seq = None
         self.stale_after = float(props.get("stale_after", 10.0))
@@ -341,14 +382,19 @@ class ModbusMirror:
 
 
 class _UdpReceiver(asyncio.DatagramProtocol):
-    def __init__(self, mirror):
+    def __init__(self, mirror, auth=None):
         self.mirror = mirror
-        self.reassembler = common.Reassembler()
+        self.auth = auth
+        self.reassembler = common.Reassembler(max_pieces=1024)
 
     def datagram_received(self, data, addr):
         payload = self.reassembler.feed(data)
         if payload is None:
             return
+        if self.auth is not None:
+            payload = self.auth.unseal(payload, self.mirror.name)
+            if payload is None:
+                return
         try:
             msg = common.decode_json(payload)
         except ValueError:
@@ -357,12 +403,14 @@ class _UdpReceiver(asyncio.DatagramProtocol):
         self.mirror.apply(msg)
 
 
-async def udp_output(name, props, cfg, mirror=None, serve=True):
+async def udp_output(name, props, cfg, mirror=None, serve=True, auth=None):
     mirror = mirror or ModbusMirror(name, props)
+    if auth is None:
+        auth = common.require_auth(cfg)
     loop = asyncio.get_running_loop()
     listen = (cfg["network"]["out_ip"], props["port"])
     transport, _ = await loop.create_datagram_endpoint(
-        lambda: _UdpReceiver(mirror), local_addr=listen)
+        lambda: _UdpReceiver(mirror, auth), sock=common.diode_socket(cfg, props["port"]))
     log.info("module %r: listening for updates on %s:%s", name, *listen)
     try:
         tasks = [mirror.watch_staleness()]

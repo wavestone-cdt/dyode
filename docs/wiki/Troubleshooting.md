@@ -89,6 +89,18 @@ done
 | `dirty` climbs steadily for the whole transfer | The disk cannot sustain the link: lower `bitrate` |
 | Nothing rises, but transfers fail | Loss before the box: optics, NIC ring, diode |
 
+**Verified in the field.** This was tested on the pair that originally
+failed (gigabit diode, LUKS-encrypted receive disk), with each release's fix
+applied:
+
+| File size | Before the fix | With the fix |
+|---|---|---|
+| 500 MB | arrived | arrived |
+| 1.3 GB | failed at ~39 s | arrived intact (1.4.2 settings) |
+| 5 GB | failed | arrived, SHA-256 identical on both ends (1.4.2 settings) |
+| 10 GB | failed | arrived (1.4.3: batch timeout fix) |
+| 20 GB | not tried | arrived, no errors (1.4.3) |
+
 **Check the disk can keep up.** Write more than your largest file,
 bypassing the cache:
 

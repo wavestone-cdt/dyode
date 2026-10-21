@@ -3,7 +3,7 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
-## [1.5.0] - unreleased
+## [1.5.0] - 2026-10-21
 
 Security release, from the 2026-10-21 audit. **Upgrade both boxes together,
 and copy the new key file to both** (see *Upgrading* below): a 1.5.0 output

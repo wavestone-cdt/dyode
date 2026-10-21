@@ -43,6 +43,13 @@ box refuses unsigned messages from a 1.4.x input box.
   (Illegal Function) and are logged. Reads outside the configured ranges get
   exception 02 (Illegal Data Address); `unmapped: zero` keeps the old answer
   of 0.
+- **Every bundled package is checksummed again.** The bundle workflow merged
+  each build job's stale copies of the other targets into the bundle, so
+  `packaging/debs/*/*/` carried old package versions and a `SHA256SUMS` that
+  listed only some of the `.deb` files (22 of 82 for Ubuntu 24.04 amd64 in
+  1.4.3). `install.sh` checked only the listed ones. Each job now uploads only
+  its own target, and `install.sh` refuses a bundle with any unlisted
+  package.
 - **Smaller items (D-10 to D-12).** NFS exports of a folder inside a larger
   filesystem use `subtree_check`. The screen viewer listens on the IT-side
   address by default instead of every address, and allows at most

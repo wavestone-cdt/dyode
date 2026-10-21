@@ -154,6 +154,16 @@ class InstallScriptTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(
             self.repo, "DYODE_v2_light", "out", "venv", "lib")))
 
+    def test_package_missing_from_sha256sums_is_refused(self):
+        """An unlisted package would otherwise be installed unchecked (the
+        bundle workflow once shipped dozens of them)."""
+        shutil.copy(os.path.join(self.wheels, "pymodbus-3.12.1-py3-none-any.whl"),
+                    os.path.join(self.wheels, "extra-1.0-py3-none-any.whl"))
+        res = self.offline_v2_out()
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("not listed in its SHA256SUMS", res.stderr)
+        self.assertIn("extra-1.0-py3-none-any.whl", res.stderr)
+
     def test_venv_carried_over_from_another_folder_is_rebuilt(self):
         self.assertEqual(self.offline_v2_out().returncode, 0)
         cfg = os.path.join(self.repo, "DYODE_v2_light", "out", "venv",

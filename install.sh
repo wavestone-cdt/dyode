@@ -398,6 +398,12 @@ check_sums() {                   # catch files damaged on the way across
   [ -f "$dir/SHA256SUMS" ] || die "no SHA256SUMS in ${dir#"$ROOT"/}; the bundle is incomplete"
   (cd "$dir" && sha256sum --quiet -c SHA256SUMS) ||
     die "files in ${dir#"$ROOT"/} do not match SHA256SUMS; copy the bundle again"
+  # Every package must be listed: an unlisted one would be installed unchecked.
+  local unlisted
+  unlisted="$(cd "$dir" && comm -23 <(ls -1 -- *.deb *.whl 2>/dev/null | sort) \
+                                    <(sed 's/^[0-9a-f]*  \*\{0,1\}//' SHA256SUMS | sort))"
+  [ -z "$unlisted" ] ||
+    die "package(s) in ${dir#"$ROOT"/} not listed in its SHA256SUMS, so they cannot be checked: $(echo $unlisted | head -c 300)"
 }
 
 # Offline: check the whole bundle BEFORE changing anything, so a damaged or

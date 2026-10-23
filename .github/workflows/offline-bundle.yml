@@ -1,0 +1,135 @@
+# Builds the offline install bundle on GitHub's machines, which have the
+# internet access an air-gapped DYODE box does not, and commits it back to
+# the branch:
+#
+#   packaging/wheels/   Python packages, Python 3.11-3.14, x86_64 + aarch64
+#   packaging/debs/     udpcast, Python venv support and the optional
+#                       SSH/SFTP, NFS and SMB servers, for Ubuntu 24.04 and
+#                       26.04 (amd64, arm64) and Raspberry Pi OS 12/13
+#                       (arm64); arm64 is built on native ARM runners, so no
+#                       emulation is involved
+#
+# Runs when the requirements or the build scripts change on a branch other
+# than master (master receives the bundle already built, through the merge),
+# or by hand from the Actions tab ("Run workflow").  Its own commit does not
+# re-trigger it.
+name: Offline install bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore: [master]
+    paths:
+      - "**/requirements.txt"
+      - "tools/build_wheelhouse.sh"
+      - "tools/build_debs.sh"
+      - ".github/workflows/offline-bundle.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: offline-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheels:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheelhouse
+        run: tools/build_wheelhouse.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: packaging/wheels
+          if-no-files-found: error
+
+  debs:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - ubuntu-24.04/amd64
+          - ubuntu-24.04/arm64
+          - ubuntu-26.04/amd64
+          - ubuntu-26.04/arm64
+          - debian-12/arm64      # Raspberry Pi OS bookworm (64-bit)
+          - debian-13/arm64      # Raspberry Pi OS trixie (64-bit)
+    runs-on: ${{ endsWith(matrix.target, '/arm64') && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      # Only this target's fresh packages may go into the artifact.  The
+      # checkout holds every target's committed copy; uploading those too
+      # merged stale packages and stale SHA256SUMS files into the bundle,
+      # leaving most .deb files unchecksummed (fixed in 1.5.0).
+      - name: Drop the committed packages
+        run: rm -rf packaging/debs
+      - name: Download packages for ${{ matrix.target }}
+        env:
+          TARGETS: ${{ matrix.target }}
+        run: tools/build_debs.sh
+      - name: Artifact name
+        id: name
+        run: echo "name=debs-${TARGET//\//-}" >> "$GITHUB_OUTPUT"
+        env:
+          TARGET: ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: packaging/debs
+          if-no-files-found: error
+
+  commit:
+    needs: [wheels, debs]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Replace the bundle with the fresh build
+        run: rm -rf packaging/wheels packaging/debs
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: packaging/wheels
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: packaging/debs
+          merge-multiple: true
+      - name: Verify every target installs offline
+        run: tools/build_wheelhouse.sh --verify
+      - name: Verify .deb checksums
+        run: |
+          for d in packaging/debs/*/*/; do
+            (cd "$d" && sha256sum --quiet -c SHA256SUMS) && echo "ok  $d"
+          done
+      - name: Summary
+        run: |
+          {
+            echo "### Offline bundle"
+            echo
+            echo "| part | files | size |"
+            echo "|---|---|---|"
+            echo "| wheels | $(ls packaging/wheels/*.whl | wc -l) | $(du -sh packaging/wheels | cut -f1) |"
+            for d in packaging/debs/*/*/; do
+              echo "| ${d#packaging/debs/} | $(ls "$d"*.deb | wc -l) | $(du -sh "$d" | cut -f1) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit the bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A packaging/wheels packaging/debs
+          if git diff --cached --quiet; then
+            echo "bundle unchanged"
+          else
+            git commit -m "Rebuild offline install bundle" \
+                       -m "Built by ${{ github.workflow }} run ${{ github.run_id }}."
+            git push
+          fi

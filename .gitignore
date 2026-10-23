@@ -16,11 +16,15 @@ downloads/
 eggs/
 .eggs/
 lib/
+# ...except the installer's own lib/, which install.sh sources
+!/lib/
 lib64/
 parts/
 sdist/
 var/
 wheels/
+# ...except the offline install bundle, which is shipped on purpose
+!packaging/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -99,3 +103,7 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# DYODE message authentication keys: secret, never committed
+dyode.key
+*.key

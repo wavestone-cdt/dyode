@@ -1,0 +1,26 @@
+# DYODE transfer logs.  Install as /etc/logrotate.d/dyode-transfer
+#
+# logrotate does the rotation rather than Python: each DYODE module runs in
+# its own process and they all append to these two files, so an in-process
+# rotating handler would have one process rename the file while the others
+# kept writing to the unlinked inode.  The daemons use WatchedFileHandler,
+# which notices the new inode and reopens -- no signal or restart needed,
+# which is why there is no postrotate script here.
+#
+# Deliberately NOT compressed: dyode-log-archive.timer packs each week into
+# one tar.gz, and gzipping consecutive days together compresses far better
+# than gzipping each day on its own.
+
+/var/log/dyode-transfer/dyode.log
+/var/log/dyode-transfer/transfer.jsonl
+{
+    daily
+    rotate 8
+    maxsize 100M
+    missingok
+    notifempty
+    dateext
+    dateformat -%Y%m%d
+    create 0640 root adm
+    sharedscripts
+}

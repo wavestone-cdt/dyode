@@ -1,0 +1,91 @@
+# Publishes a GitHub Release.  To release, bump VERSION on master:
+#
+#   echo 1.1.0 > VERSION      # and add a "## [1.1.0]" section to CHANGELOG.md
+#   git commit -am "Release 1.1.0" && git push origin master
+#
+# The workflow then tags that commit v1.1.0 and publishes the release.
+# Pushing a v* tag yourself works too.  A version that already has a release
+# is skipped, so re-running or pushing again is harmless.
+#
+# Before publishing it checks VERSION against CHANGELOG.md (and the tag, if
+# one was pushed), runs the test suite, and verifies the offline bundle, so a
+# release is never cut from a tree whose bundle is incomplete or damaged.
+# The release carries dyode-<version>.tar.gz (the whole repository, offline
+# bundle included) and its SHA-256, for carrying across an air gap.
+name: Release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - VERSION
+      - .github/workflows/release.yml
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the version
+        id: version
+        run: |
+          version="$(cat VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($version)"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released; nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          python -m pip install --quiet pyyaml "pymodbus>=3.12,<3.13"   # real-server Modbus test
+          python -m unittest discover -s tests
+
+      - name: Verify the offline bundle
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          tools/build_wheelhouse.sh --verify
+          for d in packaging/debs/*/*/; do
+            (cd "$d" && sha256sum --quiet -c SHA256SUMS) && echo "ok  $d"
+          done
+
+      - name: Package
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          version="$(cat VERSION)"
+          name="dyode-$version"
+          git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" HEAD
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          # This version's CHANGELOG section becomes the release notes.
+          awk -v v="[$version]" '/^## \[/ { p = index($0, v) > 0; next } p' \
+            CHANGELOG.md > notes.md
+          ls -l "$name".tar.gz*
+
+      - name: Publish
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          version="$(cat VERSION)"
+          # Creates tag v<version> at this commit if it does not exist yet.
+          gh release create "v$version" --target "$GITHUB_SHA" \
+            "dyode-$version.tar.gz" "dyode-$version.tar.gz.sha256" \
+            --title "DYODE $version" --notes-file notes.md

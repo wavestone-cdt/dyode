@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly DYODE log archiving
+
+[Timer]
+# Monday 03:20, after logrotate's daily run has produced Sunday's file.
+# The archiver skips the live log files anyway, so the ordering is a
+# convenience rather than a requirement.
+OnCalendar=Mon *-*-* 03:20:00
+# Catch up after downtime: a diode output box is often powered off between
+# transfer windows, and without this a missed Monday is simply skipped.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

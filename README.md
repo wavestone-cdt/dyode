@@ -1,9 +1,10 @@
 # DYODE : Do Your Own Diode
 
-A DIY, low-cost data diode for ICS
+A DIY, low-cost data diode for ICS. This has been migrated to python3 and has been modernized with setup scripts and systemd units to run on startup.
+
 This project aims at creating a working data diode for a fraction of the price of the commercial ones.
 
-This project includes two versions of DYODE :
+There are two versions of hardware targeted by DYODE:
 * DYODE full : a 19" rack-sized data diode
 
 ![dyodev1 picture](https://github.com/wavestone-cdt/dyode/blob/master/DYODE%20v1%20(full)/dyodev1.jpg)
@@ -11,7 +12,22 @@ This project includes two versions of DYODE :
 
 ![dyodev2 picture](https://github.com/wavestone-cdt/dyode/blob/master/DYODE%20v2%20(light)/dyode_v2_final.JPG)
 
-For detailed information, including steps to make your own, take a look at the [wiki](https://github.com/wavestone-cdt/dyode/wiki).
+## Python 3 port
+
+This fork runs on Python 3.11+ (the original code was Python 2). What changed,
+and how to deploy it, is in [PYTHON3_MIGRATION.md](PYTHON3_MIGRATION.md).
+Known limitations and hardware-specific issues are in [CAVEATS.md](CAVEATS.md).
+
+To configure a box, run the setup wizard from this folder:
+
+```bash
+bash ./install.sh
+```
+
+It detects your network interfaces, writes the MAC addresses into `config.yaml`
+for you, and can generate a systemd service, plus logging units for detailed diode activity log management.
+
+For detailed information, including steps to make your own, take a look at the [wiki](https://github.com/nc-intezra/dyode_python3/wiki).
 You may also take a look at the [public talks](https://github.com/wavestone-cdt/dyode/tree/master/Talks) done on this project.
 
 ## Hardware
@@ -31,6 +47,8 @@ Features
 * Modbus data transfer
 * File transfer (*DYODE full only*)
 * Screen sharing (*DYODE full only*)
+* Log streaming: syslog and log files to a SIEM (*DYODE full only*, see
+  [LOG_STREAMING.md](DYODE_v1_full/LOG_STREAMING.md))
 
 
 ## License

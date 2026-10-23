@@ -1,0 +1,133 @@
+# DYODE v1 configuration. Copy the SAME file to both the input and the
+# output box, as config.yaml.
+config_name: "Dyode test"
+config_version: 1.0
+config_date: 2016-05-04
+
+dyode_in:
+  ip: 10.0.1.1
+  mac: b8:27:eb:89:1e:f3
+  interface: eth0          # optional (new): NIC facing the diode, default eth0
+  arp_interval: 60         # optional (new): seconds between re-asserting the
+                           # static ARP entry.  It is lost when the NIC goes
+                           # down and comes back, and without it every
+                           # transfer is dropped by our own kernel while
+                           # udp-sender still reports success.
+dyode_out:
+  ip: 10.0.1.2
+  mac: b8:27:eb:b1:ff:ab   # used for the static ARP entry on the input box
+  interface: eth1          # optional (new): NIC facing the diode, default eth1
+
+# Optional (new). Logs always go to stderr as well, so journalctl still
+# works. Rotation is logrotate's job, not Python's -- see
+# packaging/logrotate/dyode-transfer.
+logging:
+  dir: /var/log/dyode-transfer   # absolute; empty string = stderr only
+  human: dyode.log               # every module, human-readable
+  json: transfer.jsonl           # one JSON object per line, transfers only
+  per_file_events: true          # false = batch summaries only
+
+# Optional (new in 1.5.0). Every message through the diode is signed with a
+# shared key: the SAME dyode.key file must sit beside config.yaml on both
+# boxes. Create it once with: python3 dyode_setup.py --new-key
+# auth:
+#   key_file: dyode.key        # relative to this file's folder
+#   required: true             # false = run unauthenticated (not recommended)
+
+modules:
+  "Partage de fichier 1":
+    type: folder
+    port: 9600
+    in: /home/pi/in
+    out: /home/pi/out
+    # optional: autostart: 5   udp-sender --autostart: hello RETRANSMISSIONS
+    #                           before data starts (not a receiver count --
+    #                           no receiver can answer through a diode).
+    #                           This is the only grace period the output box
+    #                           gets to have udp-receiver listening, and it
+    #                           costs that delay on every file.  Raise it if
+    #                           files go missing; lower it if you move
+    #                           thousands of small files.
+    # optional: start_timeout: 300
+    #                           udp-receiver --start-timeout.  An idle diode
+    #                           hits this constantly, which is normal; the
+    #                           socket is reopened immediately.  0 waits
+    #                           indefinitely.
+    # optional: settle: 2       seconds a file must be unchanged before sending
+    # optional: bitrate: 4      Mbit/s; default = 8 shared across folder modules
+    # optional: file_gap: 0.5   seconds to pause between files, so the output
+    #                           box can restart udp-receiver.  A diode gives
+    #                           it no way to ask, so this is the only way it
+    #                           gets one.  Raise it if files go missing.
+    # optional: keep_sent_hours: 24
+    #                           sent files are moved to .dyode_sent and kept
+    #                           this long instead of being deleted, because
+    #                           udp-sender exiting 0 is not proof of delivery.
+    #                           Copy one back here to re-send it.  0 = delete.
+    # optional: staging: /srv/dyode-incoming
+    #                           where incoming transfers are written before
+    #                           verification.  Default is <out>.incoming.
+    #                           It MUST NOT be inside 'out', or NFS/SFTP/rsync
+    #                           serving that folder will hand out partial
+    #                           files.  Keep it on the same filesystem as
+    #                           'out' so the final move stays atomic.
+    # optional: batch_timeout: 300
+    #                           seconds with nothing received before an
+    #                           incomplete batch is closed and its missing
+    #                           files named in the log.  A transfer still in
+    #                           progress keeps it open, however long it takes.
+    # optional: fec: 8x8/128    forward error correction ratio (default 8x16/64)
+    #                           or 'none' to switch it off.  The FEC encoder is
+    #                           single-threaded and caps throughput well below
+    #                           line rate on fast hardware, so disabling it is
+    #                           the main lever for speed -- but the diode has no
+    #                           return path, so an unrepaired packet fails the
+    #                           file's checksum and it must be re-sent by hand.
+
+  "Automate Modbus 1":
+    type: modbus            # case no longer matters ("Modbus" works)
+    port: 9400              # UDP port through the diode
+    ip: 192.168.1.150       # PLC address (input side)
+    port_out: 502           # Modbus server port (output side)
+    # Ranges are start-end with the end EXCLUDED: 0-100 = addresses 0..99.
+    registers:
+      - 0-100
+      - 400-450
+    coils:
+      - 0-10
+      - 100-110
+    # optional: plc_port: 502   unit: 1   interval: 1.0   stale_after: 10
+    # optional: unmapped: exception   reads outside the ranges above get
+    #                           Modbus exception 02; 'zero' answers 0 instead.
+    #                           Client writes always get exception 01.
+
+  "Partage d'ecran presta":
+    type: screen
+    port: 9900
+    in: /home/pi/screenz
+    out: /home/pi/screenz
+    # optional: http_port: 8080   max_fps: 10   max_streams: 8
+    # optional: http_bind: 192.168.50.4   default: the first address not on
+    #                           the diode NIC (the IT side)
+
+  "Journaux OT":
+    type: logs              # stream logs one way, OT -> IT
+    port: 9700              # UDP port through the diode
+    # --- input box: sources (at least one) ---
+    listen_udp: 514         # syslog over UDP; "10.0.0.1:514" binds one NIC
+    # listen_tcp: 601       # syslog over TCP (LF or octet-counted framing)
+    # tail:                 # follow files like tail -F (globs allowed)
+    #   - /var/log/plc/*.log
+    # allow_from: [192.168.1.0/24]   # accept syslog only from these networks
+    # --- output box: destinations (at least one) ---
+    out: /var/log/dyode-ot  # writes received.log here (logrotate-friendly)
+    # forward:              # and/or send on to a SIEM / syslog server
+    #   - udp://10.20.0.5:514
+    #   - tcp://siem.example:601
+    # optional: format: prefixed      prefixed | raw | json
+    # optional: split_by_source: false  one file per sending host
+    # optional: copies: 2       every batch is sent again ~0.5s later, so
+    #                           a burst of loss must hit both copies
+    # optional: max_kbps: 2000  cap on this module's share of the link
+    # optional: heartbeat: 10   seconds; stale_after: 30 warns on silence
+    # optional: tail_from: end  tail_state: /var/lib/dyode/tail.json

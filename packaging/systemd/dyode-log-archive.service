@@ -1,0 +1,19 @@
+[Unit]
+Description=Pack last week's rotated DYODE logs into a tarball
+Documentation=file:/opt/dyode/PYTHON3_MIGRATION.md
+
+[Service]
+Type=oneshot
+# Adjust the paths to match where DYODE is installed.
+ExecStart=/opt/dyode/venv/bin/python /opt/dyode/dyode_logs.py --archive --keep-weeks 26
+User=root
+Nice=10
+IOSchedulingClass=idle
+
+# The tool only reads and writes the log directory.
+ProtectSystem=strict
+ReadWritePaths=/var/log/dyode-transfer
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes

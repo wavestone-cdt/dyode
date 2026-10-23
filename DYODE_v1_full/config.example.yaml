@@ -83,6 +83,24 @@ modules:
     #                           the main lever for speed -- but the diode has no
     #                           return path, so an unrepaired packet fails the
     #                           file's checksum and it must be re-sent by hand.
+    # optional (1.5.1-beta): transport: lidi
+    #                           move files with ANSSI's lidi instead of
+    #                           udpcast (default udpcast).  Needs lidi-send,
+    #                           lidi-receive, lidi-file-send and lidi-file-receive
+    #                           on BOTH boxes, and the same value on both sides.
+    #                           lidi keeps its daemons running and needs no
+    #                           start-up hello, so autostart, start_timeout and
+    #                           fec do not apply; bitrate is not enforced
+    #                           either, since lidi has no rate limit.
+    #                           The UDP ports lidi_ports from 'port' up must
+    #                           not be used by another module.
+    # optional (lidi): lidi_ports: 4   parallel UDP ports (one worker each), 1-16
+    # optional (lidi): lidi_repair: 20 percent RaptorQ repair packets, 1-99.
+    #                           A starting point, not a measured value: check
+    #                           it on your diode pair before relying on it.
+    # optional (lidi): lidi_block: 220000  RaptorQ block size in bytes
+    # optional (lidi): lidi_mtu: 1500      UDP payload size, 1280-9000
+    #                           (9000 needs jumbo frames end to end)
 
   "Automate Modbus 1":
     type: modbus            # case no longer matters ("Modbus" works)

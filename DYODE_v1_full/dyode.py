@@ -28,6 +28,7 @@ import time
 import uuid
 
 import dyode_common as common
+import lidi_transport
 
 log = logging.getLogger("dyode.folder")
 
@@ -188,6 +189,9 @@ class UdpCast:
                           text[-500:])
             return False, text, elapsed
         return True, text, elapsed
+
+    def close(self):
+        """Nothing to release: udp-sender runs once per file."""
 
     def send(self, path):
         return self._run(self.sender_cmd(path))[0]
@@ -593,14 +597,23 @@ def run_folder_input(name, props, cfg):
     rescan = float(props.get("rescan", 30.0))
     file_gap = float(props.get("file_gap", 0.5))
     keep_sent_hours = props.get("keep_sent_hours", 24)
-    transport = UdpCast(props, cfg)
     auth = common.require_auth(cfg)
     watcher = ChangeWatcher(root)
     workdir = tempfile.mkdtemp(prefix="dyode_%s_" % props["port"])
-    log.info("module %r: watching %s (port %d, %d Mbit/s, FEC %s, gap %.2fs, "
-             "sent files kept %s)", name, root, props["port"],
-             transport.bitrate, transport.fec or "off", file_gap,
-             ("%dh" % keep_sent_hours) if keep_sent_hours else "not at all")
+    if props["transport"] == "lidi":
+        transport = lidi_transport.LidiSender(props, cfg)
+        log.info("module %r: watching %s (port %d, transport lidi on %d UDP "
+                 "port(s), repair %d%%, gap %.2fs, sent files kept %s)",
+                 name, root, props["port"], props["lidi_ports"],
+                 props["lidi_repair"], file_gap,
+                 ("%dh" % keep_sent_hours) if keep_sent_hours else "not at all")
+        transport.start()
+    else:
+        transport = UdpCast(props, cfg)
+        log.info("module %r: watching %s (port %d, %d Mbit/s, FEC %s, gap %.2fs, "
+                 "sent files kept %s)", name, root, props["port"],
+                 transport.bitrate, transport.fec or "off", file_gap,
+                 ("%dh" % keep_sent_hours) if keep_sent_hours else "not at all")
     try:
         while True:
             # Existing files are picked up at start-up too (the original
@@ -614,6 +627,7 @@ def run_folder_input(name, props, cfg):
             prune_sent(root, keep_sent_hours)
             watcher.wait(settle if waiting else rescan)
     finally:
+        transport.close()
         shutil.rmtree(workdir, ignore_errors=True)
 
 
@@ -1016,38 +1030,36 @@ def run_folder_output(name, props, cfg):
         except OSError:
             pass
 
-    transport = UdpCast(props, cfg)
     receiver = FolderReceiver(out_dir, module=name, auth=common.require_auth(cfg))
-    log.info("module %r: receiving into %s via %s (port %d)",
-             name, out_dir, staging, props["port"])
+    batch_timeout = float(props.get("batch_timeout", 300.0))
+    partial_dir = os.path.join(staging, lidi_transport.PARTIAL_DIR)
+    receiving = {"blob": None, "last_data": None}   # what is being received now
+
+    if props["transport"] == "lidi":
+        transport = lidi_transport.LidiReceiver(props, cfg, out_dir, partial_dir)
+        receiving["last_data"] = lambda: lidi_transport.newest_mtime(partial_dir)
+        log.info("module %r: receiving into %s via %s (port %d, transport lidi)",
+                 name, out_dir, staging, props["port"])
+    else:
+        transport = UdpCast(props, cfg)
+        receiving["last_data"] = lambda: last_data_time(receiving["blob"])
+        log.info("module %r: receiving into %s via %s (port %d)",
+                 name, out_dir, staging, props["port"])
 
     # Bounded, so a slow disk applies backpressure instead of filling it.
     work = queue.Queue(maxsize=4)
+    # Staging files already handed to the verifier (lidi mode only: it
+    # rescans the folder and must not queue one file twice).
+    queued = set()
+    start_verifier(receiver, work, batch_timeout, receiving, queued)
 
-    batch_timeout = float(props.get("batch_timeout", 300.0))
-    receiving = {"blob": None}      # the staging file udp-receiver is filling
-
-    def verify_loop():
-        while True:
-            try:
-                blob = work.get(timeout=min(30.0, batch_timeout or 30.0))
-            except queue.Empty:
-                # Report what never arrived -- unless data is still landing.
-                receiver.sweep(batch_timeout, last_data_time(receiving["blob"]))
-                continue
-            try:
-                receiver.handle(blob)
-            except OSError as err:
-                log.error("could not store received file: %s", err)
-                if os.path.exists(blob):
-                    try:
-                        os.remove(blob)
-                    except OSError:
-                        pass
-            finally:
-                work.task_done()
-
-    threading.Thread(target=verify_loop, name="verify", daemon=True).start()
+    if props["transport"] == "lidi":
+        try:
+            lidi_receive_loop(transport, staging, work, queued, partial_dir,
+                              batch_timeout)
+        finally:
+            transport.close()
+        return
 
     while True:
         fd, blob = tempfile.mkstemp(dir=staging)
@@ -1065,3 +1077,76 @@ def run_folder_output(name, props, cfg):
             # to wait, so any pause here is a window in which a transfer is
             # missed entirely.
             time.sleep(1.0)
+
+
+def start_verifier(receiver, work, batch_timeout, receiving, queued):
+    """Start the thread that verifies and places received files.
+
+    Verification runs apart from receiving so the transport can resume at
+    once.  Each blob is taken off `queued` when it is done, so the lidi loop
+    can queue a staging file again only if it is still there.
+    """
+    def verify_loop():
+        while True:
+            try:
+                blob = work.get(timeout=min(30.0, batch_timeout or 30.0))
+            except queue.Empty:
+                # Report what never arrived -- unless data is still landing.
+                receiver.sweep(batch_timeout, receiving["last_data"]())
+                continue
+            try:
+                receiver.handle(blob)
+            except OSError as err:
+                log.error("could not store received file: %s", err)
+                if os.path.exists(blob):
+                    try:
+                        os.remove(blob)
+                    except OSError:
+                        pass
+            finally:
+                queued.discard(blob)
+                work.task_done()
+
+    threading.Thread(target=verify_loop, name="verify", daemon=True).start()
+
+
+def lidi_receive_loop(transport, staging, work, queued, partial_dir,
+                      batch_timeout, stop=None):
+    """Keep lidi running and queue each completed file in staging.
+
+    lidi-file-receive moves a file into staging only once it is complete, so
+    everything there is ready to verify.  The folder is watched with inotify
+    and rescanned at least once a second.  `stop` (a threading.Event) exists
+    for tests; in production the loop runs until the process is killed.
+    """
+    transport.start()
+    watcher = ChangeWatcher(staging, recursive=False)
+    last_prune = 0.0
+    while stop is None or not stop.is_set():
+        transport.ensure_running()
+        arrived = []
+        for fname in os.listdir(staging):
+            path = os.path.join(staging, fname)
+            if fname.startswith(".") or path in queued:
+                continue
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            arrived.append((st.st_ctime_ns, fname, path))
+        # In arrival order: a manifest must be verified before the files it
+        # names, and lidi names files by random UUIDs, so name order is no
+        # guide.  ctime changes when lidi renames a finished file in.
+        for _ctime, _fname, path in sorted(arrived):
+            queued.add(path)
+            work.put(path)
+        now = time.monotonic()
+        if now - last_prune >= 60.0:
+            # A partial file untouched for a long time was left by a sender
+            # that died mid-file; the batch timeout has closed its batch.
+            lidi_transport.prune_partial(partial_dir,
+                                         older_than=max(batch_timeout or 0, 600.0))
+            last_prune = now
+        watcher.wait(1.0)

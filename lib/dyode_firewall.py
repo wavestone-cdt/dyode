@@ -34,12 +34,12 @@ def load(config_path):
 
 def diode_ports(cfg):
     """Every UDP port a module receives on through the diode."""
+    import dyode_common
     ports = set()
     for props in cfg["modules"].values():
-        port = int(props["port"])
-        ports.add(port)
-        if props["type"] == "folder":
-            ports.add(port + 1)          # udpcast uses portbase and portbase+1
+        # Folder modules: udpcast uses portbase and portbase+1; lidi uses
+        # one port per lidi_ports.  See dyode_common.diode_udp_ports.
+        ports.update(int(p) for p in dyode_common.diode_udp_ports(props))
     return sorted(p for p in ports if 0 < p < 65536)
 
 

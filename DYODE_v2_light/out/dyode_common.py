@@ -50,6 +50,17 @@ DEFAULT_FEC = "8x16/64"
 FEC_DISABLED = ("none", "off", "false", "no", "0", "disabled")
 FEC_RE = re.compile(r"^\d+x\d+(/\d+)?$")
 
+# Transport for folder transfers.  'udpcast' is the 1.5.0 behaviour; 'lidi'
+# (ANSSI-FR/lidi, see lidi_transport.py) is the 1.5.1-beta substitute.  The
+# two sides of a module must use the same value, as they must the same
+# version.  Left at udpcast until lidi is bundled for every supported system.
+TRANSPORTS = ("udpcast", "lidi")
+DEFAULT_TRANSPORT = "udpcast"
+# lidi tuning, all of which must match on both boxes.  The repair default is
+# a starting point, not a measured optimum: measure on the diode pair first.
+LIDI_DEFAULTS = {"lidi_ports": 4, "lidi_repair": 20,
+                 "lidi_block": 220000, "lidi_mtu": 1500}
+
 DEFAULT_NETWORK = {
     "in_ip": "10.0.1.1",
     "out_ip": "10.0.1.2",
@@ -433,7 +444,10 @@ def _normalize_module(name, props):
                 if props["bitrate"] < 1:
                     raise ConfigError("module %r: 'bitrate' must be at least 1"
                                       % name)
+            props["transport"] = _normalize_transport(name, props.get("transport",
+                                                                      DEFAULT_TRANSPORT))
             props["fec"] = _normalize_fec(name, props.get("fec", DEFAULT_FEC))
+            _normalize_lidi(name, props)
             # Pause between files: the receiver must restart udp-receiver
             # between transfers and a diode gives it no way to say so.
             props["file_gap"] = _positive_number(
@@ -521,6 +535,40 @@ def _positive_number(name, key, value, allow_zero=False, integer=False):
                              "zero or more" if allow_zero else "more than zero",
                              value))
     return number
+
+
+def _normalize_transport(name, value):
+    text = str(value).strip().lower()
+    if text not in TRANSPORTS:
+        raise ConfigError("module %r: 'transport' must be one of %s, got %r"
+                          % (name, ", ".join(TRANSPORTS), value))
+    return text
+
+
+def _normalize_lidi(name, props):
+    """Validate the lidi tuning keys.  Checked even under udpcast, so a typo
+    is caught before the module is switched over."""
+    for key, default in LIDI_DEFAULTS.items():
+        props[key] = int(_positive_number(name, key, props.get(key, default),
+                                          integer=True))
+    if props["lidi_ports"] > 16:
+        raise ConfigError("module %r: 'lidi_ports' must be 1 to 16, got %r"
+                          % (name, props["lidi_ports"]))
+    if props["lidi_repair"] > 99:
+        raise ConfigError("module %r: 'lidi_repair' must be 1 to 99 (a percentage), "
+                          "got %r" % (name, props["lidi_repair"]))
+    if not 1280 <= props["lidi_mtu"] <= 9000:
+        raise ConfigError("module %r: 'lidi_mtu' must be 1280 to 9000, got %r"
+                          % (name, props["lidi_mtu"]))
+
+
+def diode_udp_ports(props):
+    """Every UDP port a module receives on through the diode."""
+    if props["type"] != "folder":
+        return [props["port"]]
+    if props.get("transport", DEFAULT_TRANSPORT) == "lidi":
+        return [props["port"] + i for i in range(props["lidi_ports"])]
+    return [props["port"], props["port"] + 1]    # udpcast: portbase, portbase+1
 
 
 def _normalize_fec(name, value):

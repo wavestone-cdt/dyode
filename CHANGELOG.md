@@ -3,6 +3,38 @@
 All notable changes to this fork of DYODE. Versions follow
 [semantic versioning](https://semver.org/); the version is in `VERSION`.
 
+## [1.5.1-beta] - unreleased
+
+Beta: lidi as an alternative folder transport. Branch `1.5.1-beta`, from the
+`v1.5.0` tag. Not yet released; `VERSION` still reads 1.5.0.
+
+### Added
+
+- **`transport: lidi` for folder modules** (ANSSI-FR/lidi, LGPL-3.0). A
+  substitute for udpcast, selected per module. The default stays `udpcast`,
+  so existing configurations are unchanged. Both boxes must use the same
+  transport, and both must be upgraded together, as for 1.5.0.
+  - `lidi_ports`, `lidi_repair`, `lidi_block`, `lidi_mtu`: lidi tuning. They
+    must match on both boxes. Validated under either transport.
+  - lidi runs as long-lived daemons per box (`lidi-send` / `lidi-receive` on
+    the UDP side, `lidi-file-send` / `lidi-file-receive` as file clients),
+    connected by private Unix sockets. Nothing is opened on TCP.
+  - The receiver is always listening, so the sender's hello and the
+    receiver's start-timeout restarts are gone for lidi modules.
+  - Firewall (`install.sh` / nftables) opens one UDP port per `lidi_ports`
+    for lidi modules. udpcast modules are unchanged.
+
+### Not yet done
+
+- **lidi is not packaged.** `install.sh`, the offline bundle
+  (`tools/build_debs.sh`) and `packaging/` do not install lidi yet.
+- **Not run against real lidi.** The test environment could not build or
+  download lidi, so `tests/test_lidi.py` checks DYODE's side against stand-ins.
+  Before enabling lidi, run it on the diode pair: confirm the lidi flags, that
+  `lidi-file-send` opens the offered symlink and names the file by its link
+  name, and that files arrive complete. Measure `lidi_repair` on the pair.
+- `bitrate` and `fec` have no effect under lidi.
+
 ## [1.5.0] - 2026-10-21
 
 Security release, from the 2026-10-21 audit. **Upgrade both boxes together,
